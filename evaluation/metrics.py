@@ -1,0 +1,115 @@
+"""Evaluation metrics for every task head (see DESIGN.md section 10).
+
+  - T-shirt validity gate      : accuracy / precision / recall / F1
+  - Defect classification      : per-class precision/recall/F1 + confusion matrix
+  - Instance segmentation      : mask IoU/Dice, AP50, AP75, mask mAP (COCO-style)
+  - Industrial decision metrics: false reject rate (FRR), false accept rate (FAR),
+                                  defect-recall (garment-level), latency/FPS
+"""
+from __future__ import annotations
+
+from typing import Dict, List
+
+import numpy as np
+import torch
+
+
+def mask_iou(mask_a: torch.Tensor, mask_b: torch.Tensor, eps: float = 1e-6) -> float:
+    a, b = (mask_a > 0.5), (mask_b > 0.5)
+    inter = (a & b).sum().item()
+    union = (a | b).sum().item()
+    return inter / (union + eps)
+
+
+def mask_dice(mask_a: torch.Tensor, mask_b: torch.Tensor, eps: float = 1e-6) -> float:
+    a, b = (mask_a > 0.5).float(), (mask_b > 0.5).float()
+    inter = (a * b).sum().item()
+    return (2 * inter) / (a.sum().item() + b.sum().item() + eps)
+
+
+def compute_ap(recalls: np.ndarray, precisions: np.ndarray) -> float:
+    """101-point interpolated AP, COCO convention."""
+    recalls = np.concatenate([[0.0], recalls, [1.0]])
+    precisions = np.concatenate([[0.0], precisions, [0.0]])
+    for i in range(len(precisions) - 2, -1, -1):
+        precisions[i] = max(precisions[i], precisions[i + 1])
+    ap = 0.0
+    for r in np.linspace(0, 1, 101):
+        idx = np.searchsorted(recalls, r)
+        ap += precisions[min(idx, len(precisions) - 1)] / 101
+    return float(ap)
+
+
+def match_predictions_to_gt(pred_masks: List[torch.Tensor], pred_labels: List[int],
+                             pred_scores: List[float], gt_masks: List[torch.Tensor],
+                             gt_labels: List[int], iou_thresh: float) -> Dict:
+    """Greedy one-to-one matching by descending score, per class. Returns
+    per-prediction TP/FP flags for mAP accumulation."""
+    order = np.argsort(-np.array(pred_scores)) if pred_scores else np.array([], dtype=int)
+    matched_gt = set()
+    tp = np.zeros(len(pred_scores))
+    fp = np.zeros(len(pred_scores))
+
+    for rank, i in enumerate(order):
+        best_iou, best_j = 0.0, -1
+        for j, (gm, gl) in enumerate(zip(gt_masks, gt_labels)):
+            if j in matched_gt or gl != pred_labels[i]:
+                continue
+            iou = mask_iou(pred_masks[i], gm)
+            if iou > best_iou:
+                best_iou, best_j = iou, j
+        if best_iou >= iou_thresh and best_j >= 0:
+            tp[rank] = 1
+            matched_gt.add(best_j)
+        else:
+            fp[rank] = 1
+    return {"tp": tp, "fp": fp, "num_gt": len(gt_masks)}
+
+
+def mask_map(all_matches: List[Dict], iou_thresh_label: str = "AP50") -> float:
+    tp = np.concatenate([m["tp"] for m in all_matches]) if all_matches else np.array([])
+    fp = np.concatenate([m["fp"] for m in all_matches]) if all_matches else np.array([])
+    num_gt = sum(m["num_gt"] for m in all_matches)
+    if num_gt == 0 or len(tp) == 0:
+        return 0.0
+    tp_cum, fp_cum = np.cumsum(tp), np.cumsum(fp)
+    recalls = tp_cum / num_gt
+    precisions = tp_cum / np.clip(tp_cum + fp_cum, 1e-9, None)
+    return compute_ap(recalls, precisions)
+
+
+def classification_prf1(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int) -> Dict:
+    precisions, recalls, f1s = [], [], []
+    confusion = np.zeros((num_classes, num_classes), dtype=int)
+    for t, p in zip(y_true, y_pred):
+        confusion[t, p] += 1
+    for c in range(num_classes):
+        tp = confusion[c, c]
+        fp = confusion[:, c].sum() - tp
+        fn = confusion[c, :].sum() - tp
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        precisions.append(precision); recalls.append(recall); f1s.append(f1)
+    return {"per_class_precision": precisions, "per_class_recall": recalls,
+            "per_class_f1": f1s, "confusion_matrix": confusion}
+
+
+def false_reject_rate(pred_defective: np.ndarray, gt_defective: np.ndarray) -> float:
+    """Fraction of GOOD garments incorrectly flagged as defective (over-rejection)."""
+    good = gt_defective == 0
+    if good.sum() == 0:
+        return 0.0
+    return float((pred_defective[good] == 1).sum() / good.sum())
+
+
+def false_accept_rate(pred_defective: np.ndarray, gt_defective: np.ndarray) -> float:
+    """Fraction of DEFECTIVE garments incorrectly passed as good (escapes to customer)."""
+    bad = gt_defective == 1
+    if bad.sum() == 0:
+        return 0.0
+    return float((pred_defective[bad] == 0).sum() / bad.sum())
+
+
+def defect_recall(pred_defective: np.ndarray, gt_defective: np.ndarray) -> float:
+    return 1.0 - false_accept_rate(pred_defective, gt_defective)

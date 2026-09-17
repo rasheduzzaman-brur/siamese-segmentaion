@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+runs/
+export/artifacts/
+*.onnx
+*.xml
+*.bin
+.venv/
+*.egg-info/
