@@ -170,22 +170,13 @@ Instance 1: class=print_crack   confidence=0.96  bbox=(640,300,820,390)  mask=<2
 Instance 2: class=spot_stain    confidence=0.91  bbox=(1200,900,1260,955) mask=<...>
 ```
 
-### 3.5 Classification heads (implementation: `models/classification_head.py`)
+### 3.5 Defect classification
 
-Two distinct classifiers, deliberately kept separate:
-
-1. **T-shirt validity** (`TshirtValidityHead`): global average pool of P5 → 2-layer MLP →
-   single logit. Operates on the *inspected* branch only — a reference is not required to
-   answer "is a T-shirt correctly presented to the camera", and this check should run
-   **before** the (more expensive) Siamese comparison in the deployed pipeline (section 14).
-2. **Per-instance defect class**: this is `cls_logits` inside `SegmentationHead` — it is a
-   dense, per-location, multi-class (not multi-label) prediction, trained with focal loss.
-   It is *not* a separate whole-image classifier; keeping it fused with the box/mask
-   branches lets one NMS pass resolve class + location + mask jointly, avoiding an
-   inconsistent detector-then-classifier cascade.
-
-An optional `GarmentAttributeHead` (style/color/size) is included as a sanity-check signal
-only — see section 11 — not part of the core defect-detection loss.
+**Per-instance defect class** is `cls_logits` inside `SegmentationHead` — a dense,
+per-location, multi-class (not multi-label) prediction, trained with focal loss. It is
+*not* a separate whole-image classifier; keeping it fused with the box/mask branches lets
+one NMS pass resolve class + location + mask jointly, avoiding an inconsistent
+detector-then-classifier cascade.
 
 ---
 
@@ -234,7 +225,7 @@ reference_image (B,3,800,800)          input_image (B,3,800,800)
               │
    ┌──────────▼───────────────────────────────────────────────┐
    │ final output: instances[{class, confidence, bbox, mask}],│
-   │ valid_tshirt score, embedding_distance (anomaly score)    │
+   │ embedding_distance (anomaly score)                         │
    └────────────────────────────────────────────────────────────┘
 ```
 
@@ -244,15 +235,15 @@ reference_image (B,3,800,800)          input_image (B,3,800,800)
 
 ### 5.1 Directory structure (extends the brief's proposal)
 
-The brief's `reference/` + `images/` split is kept, but garment/reference identity is made
-explicit rather than inferred from filenames, and annotations are centralized (COCO-style)
-rather than one file per image:
+The brief's `reference/` + `images/` split is kept. Each inspected image simply names the
+reference image it is paired against; no separate garment/production identity registry is
+kept (deliberately minimal — see §5.2). Annotations are centralized (COCO-style) rather than
+one file per image:
 
 ```
 data/
 ├── reference/
 │   ├── ST001_BLACK_L_v1.png
-│   ├── ST001_BLACK_L_v2.png          # multiple approved refs per style/color/size, see §11
 │   └── ...
 ├── images/
 │   ├── tshirt_001_defect_001.png
@@ -260,46 +251,49 @@ data/
 │   └── ...
 └── annotations/
     ├── annotations.json              # full COCO-extended dataset (schema below)
-    ├── train.json / val.json / test.json   # disjoint by garment_id, never by image_id
+    ├── train.json / val.json / test.json   # disjoint by reference_image, never by image_id
     └── example_annotation.json       # see data/annotations/example_annotation.json
 ```
 
-**Why split by `garment_id`, not `image_id`:** two captures of the *same physical garment*
-(e.g. re-shot after a lighting adjustment) are strongly correlated; letting one land in
-train and the other in val leaks information and inflates validation metrics. **[REC]**
+**Why split by `reference_image`, not `image_id`:** two captures of the *same physical
+garment* (e.g. re-shot after a lighting adjustment) are strongly correlated; letting one land
+in train and the other in val leaks information and inflates validation metrics. **[REC]**
 
-### 5.2 Annotation format: custom COCO-extended JSON
+### 5.2 Annotation format: minimal COCO-style JSON
 
-**Recommendation: COCO-style JSON with garment-inspection extensions**, not raw COCO and
-not YOLO-seg. Reasoning:
+**Recommendation: a minimal COCO-style JSON** — deliberately stripped down to exactly what
+the model consumes, not raw COCO and not YOLO-seg. Reasoning:
 
 | Format | Verdict |
 |---|---|
-| YOLO-seg (`.txt` per image, normalized polygon) | No native place for `reference_id`, `garment_id`, `camera_id`, severity, or multi-reference metadata; would need a parallel sidecar format anyway. Rejected. |
-| Raw COCO | Has `images`/`annotations`/`categories`, well-supported by `pycocotools` — good foundation, but has no concept of "reference image" or "garment"/pairing at all. |
-| **Custom COCO-extended (chosen)** | Keep COCO's `images[]`/polygon-or-RLE segmentation/bbox/category conventions (so `pycocotools` mask utilities and any existing COCO-eval tooling keep working), and add `garments[]` + `references[]` top-level arrays plus per-image `reference_id`, `garment_id`, `camera_id`, `alignment`, `lighting_condition`, `valid_tshirt`, and per-defect `severity`. |
+| YOLO-seg (`.txt` per image, normalized polygon) | No native place for `reference_image`; would need a parallel sidecar file anyway. Rejected. |
+| Raw COCO | Has `images`/`annotations`/`categories`, well-supported by `pycocotools` — good foundation, but has no concept of "reference image"/pairing at all. |
+| **Minimal COCO-style (chosen)** | Keep COCO's polygon-or-RLE segmentation/bbox/category conventions (so `pycocotools` mask utilities keep working), and add only a `reference_image` field per inspected image. No garment/production identity, camera, alignment, lighting, or severity metadata — see below. |
 
 Required fields per entity (also see the working example at
 `data/annotations/example_annotation.json`, and the loader `datasets/dataset.py`):
 
-- **Garment**: `garment_id`, `style_id`, `color`, `size`, `design`, `production_order_id`,
-  `production_line_id`, `reference_ids` (list — see §11).
-- **Reference image**: `reference_id`, `style_id/color/size`, `file_name`, `tshirt_bbox`,
-  `tshirt_mask`, `camera_id`, `approved_date`, `approved_by`, `status` (`golden` /
-  `retired`).
-- **Inspected image**: `image_id`, `garment_id`, `reference_id`, `file_name`, `camera_id`,
-  `capture_timestamp`, `lighting_condition`, `tshirt_bbox`, `tshirt_mask`, `valid_tshirt`,
-  `alignment` (method/homography/score — output of the upstream ORB+RANSAC step, stored so
-  training can condition on / filter by alignment quality), and `defects[]`.
-- **Defect instance**: `instance_id`, `category`, `category_id`, `bbox` (COCO xywh),
-  `segmentation` (`polygon` or `rle`, both supported — see `_decode_segmentation` in
-  `datasets/dataset.py`), `area`, `severity` (`minor`/`major`/`critical` — optional but
-  recommended for FRR/FAR calibration, section 10), `iscrowd`.
+- **Image**: `image_id`, `file_name`, `reference_image` (path to its paired reference),
+  `width`, `height`, and `defects[]`.
+- **Defect instance**: `category`, `bbox` (COCO xywh), `segmentation` (`polygon` or `rle`,
+  both supported — see `_decode_segmentation` in `datasets/dataset.py`). Nothing else —
+  no `instance_id`, `category_id`, `area`, `severity`, or `iscrowd`; `category_id` is
+  derived from `configs/config.yaml -> data.defect_classes` at load time and `area` from the
+  decoded mask if a metric needs it.
 
 Multiple defect instances per image are simply multiple entries in the `defects[]` array —
 no special encoding needed since segmentation is instance-level (each polygon/RLE is one
 instance), unlike a single-mask-per-image semantic-segmentation encoding which cannot
 separate touching/overlapping defects of different classes.
+
+**What this intentionally drops** (garment/style/color/size/design/production-order/
+production-line identity, camera id, capture alignment, lighting condition, per-defect
+severity, and the whole-image `valid_tshirt` gate/model head) was present in an earlier
+revision of this schema. It was cut to keep the annotation surface to exactly
+{reference image, per-defect class + bbox + mask} — if garment traceability, severity-based
+FRR/FAR calibration (§10), or a pre-segmentation "is this even a valid T-shirt capture" gate
+(§14) become requirements again, they should be reintroduced as their own explicit fields/
+heads rather than assumed implicit in the defect annotation.
 
 A full worked example is at **`data/annotations/example_annotation.json`**.
 
@@ -310,8 +304,8 @@ A full worked example is at **`data/annotations/example_annotation.json`**.
 ### 6.1 Pair taxonomy
 
 ```
-(reference=golden, inspected=good, same garment)      -> pair_label = 0 (negative)
-(reference=golden, inspected=defective, same garment) -> pair_label = 1 (positive)
+(reference=golden, inspected=good, same reference_image)      -> pair_label = 0 (negative)
+(reference=golden, inspected=defective, same reference_image) -> pair_label = 1 (positive)
 ```
 
 `pair_label` is derived automatically in `SiameseDefectDataset.__getitem__` as
@@ -322,10 +316,7 @@ annotations already required for segmentation.
 
 | Axis | Same across ref/input? | Why |
 |---|---|---|
-| Garment identity | Same garment_id required for a valid pair | A different garment is not a meaningful "defect" comparison — that's a *reference-selection* error, handled separately (§11), not a training pair. |
-| Style/design | Must match | Comparing a crew-neck reference against a v-neck input is undefined. |
-| Color | Must match | Color deviation *within* a color is a defect class; cross-color pairs are not informative negatives and would teach the model color itself is a defect signal. |
-| Size | Must match | Different size = different garment silhouette = spurious "difference" everywhere. |
+| Reference image | Same `reference_image` required for a valid pair | A different reference is not a meaningful "defect" comparison — that's a *reference-selection* error, handled upstream by whatever assigns `reference_image` per capture, not a training pair. |
 | Lighting | **Deliberately varied** (independent photometric augmentation, §9) | The model must be invariant to normal line-to-line lighting drift; this is the single most important axis for reducing false rejects. |
 | Camera position / minor viewpoint | **Deliberately varied** (small independent geometric jitter on the reference branch, §9) | Reference and inspected shots are never pixel-identical even after ORB+RANSAC alignment; the model must tolerate residual misalignment rather than treating it as a defect. |
 | Fabric deformation / wrinkle | **Deliberately present in "good" captures** | Real production garments wrinkle; if all "good" training examples are pressed-flat, the model will flag every wrinkle as an anomaly. This is a **data collection requirement**, not something augmentation can safely fabricate (synthetically warping a flat good image risks looking like fabric damage — a label-destroying augmentation, see §9). |
@@ -404,16 +395,13 @@ L_mask = w_bce · BCE(p, y) + w_dice · L_dice          (w_bce = w_dice = 1.0 de
   than over-segmented boundaries", to be tuned once FAR/FRR from section 10 are measured on
   a real validation set.
 
-### 7.3 Classification (implementation: `losses/classification_loss.py`)
+### 7.3 Classification
 
 Per-instance defect class already uses focal loss (§7.1, shared tensors with the box
-head — not duplicated). **T-shirt validity** uses plain BCE (`TshirtClassificationLoss`) —
-class imbalance here is expected to be mild (most captured frames are valid T-shirts)
-**[ASSUMPTION — revisit if the false-accept rate on non-tshirt/empty-frame inputs is high]**.
-The optional `GarmentAttributeHead` (style/color/size sanity-check) uses **label-smoothed
-cross-entropy** (`LabelSmoothingCE`, smoothing=0.05) since it's a small, clean, closed-set
-label space where preventing over-confident wrong predictions matters more than raw
-accuracy on this auxiliary task.
+head — not duplicated). There is no separate whole-image classification loss: the
+`valid_tshirt` gate and `GarmentAttributeHead` sanity-check described in an earlier revision
+of this design were removed along with their annotation fields (§5.2); reintroduce this
+subsection alongside them if they come back.
 
 ### 7.4 Siamese metric-learning loss (implementation: `losses/contrastive_loss.py`)
 
@@ -430,12 +418,11 @@ accuracy on this auxiliary task.
 L_total = w_det   · (L_cls_focal + L_box_ciou + L_centerness_bce)
         + w_seg   · L_mask_bce_dice
         + w_siam  · L_contrastive
-        + w_tshirt· L_tshirt_bce
 ```
 
 **[REC]** Start with weights that equalize each loss's *initial* magnitude (log once per
 loss at step 0, set `w_i ∝ 1/initial_loss_i`), not with arbitrary defaults — the values in
-`configs/config.yaml` (`detection=1.0, segmentation=2.0, siamese=0.5, tshirt=0.5`) are a
+`configs/config.yaml` (`detection=1.0, segmentation=2.0, siamese=0.5`) are a
 reasonable starting point but **[NEEDS ABLATION]**: re-tune once real loss curves exist,
 and consider annealing `w_siam` down mid-training once the encoder embedding space has
 stabilized (an over-weighted metric-learning loss late in training can pull the shared
@@ -447,8 +434,8 @@ backbone away from the fine-grained localization features the segmentation head 
 
 ### 8.1 Staged pipeline
 
-1. **Dataset prep**: garment-level train/val/test split (§5.1), verify every image has a
-   resolvable `reference_id`, verify annotation polygon/RLE decode round-trips.
+1. **Dataset prep**: reference-image-level train/val/test split (§5.1), verify every image's
+   `reference_image` path resolves, verify annotation polygon/RLE decode round-trips.
 2. **Pair generation**: `datasets/pair_sampler.split_positive_negative` + hard-negative pool
    initialized from all negatives (uniform at epoch 0, since embeddings aren't meaningful
    yet).
@@ -467,7 +454,7 @@ backbone away from the fine-grained localization features the segmentation head 
    `hard_negative_refresh_every_epochs`, batch sampler shifts toward hard negatives per
    §6.3.
 8. **Validation** every epoch (`training/validate.py`): full decode+NMS+mask-assembly on
-   held-out garments, mask mAP / AP50 / AP75 / tshirt accuracy.
+   held-out garments, mask mAP / AP50 / AP75.
 9. **Fine-tuning**: once mask mAP plateaus, a short (~10-20 epoch) low-LR
    (`min_lr_ratio`-level) fine-tune restricted to the *segmentation* and *siamese* heads
    only (freeze detection cls/box) is a useful next step if mask boundary quality lags
@@ -527,7 +514,6 @@ which will not hold on the line.
 
 | Task | Metrics | Notes |
 |---|---|---|
-| T-shirt classification | Accuracy, Precision, Recall, F1 | Simple binary gate; monitor recall specifically (missing "not a T-shirt" cases lets junk frames flow into the expensive Siamese comparison). |
 | Defect classification | Per-class Precision/Recall/F1, confusion matrix (`classification_prf1`) | Report **per class**, never only a macro-average — `other_anomaly` and rare classes (`fabric_damage`) will have much noisier estimates and must be tracked separately, not hidden inside an aggregate. |
 | Instance segmentation | Mask IoU/Dice per-instance (`mask_iou`, `mask_dice`), AP50/AP75/mask-mAP via greedy score-ranked matching (`match_predictions_to_gt`, `mask_map`) | Implementation here is a simplified single-IoU-threshold matcher for tractability inside `training/validate.py`; for a publishable/contractual number, cross-check against `pycocotools.cocoeval.COCOeval` directly on exported COCO-format predictions. |
 | **Industrial** | **False Reject Rate (FRR)**, **False Accept Rate (FAR)**, garment-level defect recall, latency (P50/P95), FPS | `false_reject_rate`, `false_accept_rate`, `defect_recall` in `evaluation/metrics.py`, all computed at the **garment pass/fail decision level**, not the instance level — a garment is "defective" if it has ≥1 GT defect instance, "flagged" if the model produces ≥1 instance above threshold. |
@@ -545,26 +531,19 @@ choice).
 
 ## 11. Reference image handling
 
-**[REC] Selection: dynamic, keyed by (style_id, color, size), with support for multiple
-approved references per key, not a single fixed golden image.**
+**[REC] Selection: fixed per annotation record, resolved upstream.** Each image record
+carries a single `reference_image` path (§5.2); the dataset loader (`datasets/dataset.py`)
+just reads it directly — there is no garment-identity lookup or dynamic multi-reference
+selection inside the training/inference code path. Whatever upstream process (production-
+order barcode/RFID, line-station config, or a manual annotation step) decides which
+reference a given capture should be compared against is responsible for writing the correct
+`reference_image` into the annotation, before the file ever reaches this pipeline.
 
 ```
-Input capture  -> read garment metadata (style=ST001, color=Black, size=L)
-                          (from production-order barcode/RFID/line-station config,
-                           NOT inferred from the image itself — [ASSUMPTION: this
-                           metadata is available at the line station; if not, the
-                           optional GarmentAttributeHead's predicted style/color/size
-                           can serve as a fallback lookup key, at lower reliability)
+Input capture  -> reference_image already resolved upstream and written into the
+                   annotation record (image record's `reference_image` field)
                           ↓
-               reference_ids = garments[garment_id].reference_ids
-                          ↓
-               training: randomly choose among reference_ids per sample (mild
-                         augmentation + robustness to reference variation)
-               inference: choose the single currently-`status:"golden"` reference,
-                         or — if multiple simultaneously-approved references exist
-                         (e.g. two acceptable print-registration tolerances) — score
-                         against all and take the **minimum** embedding distance
-                         (most-similar-approved-reference wins)
+               training/inference: load that single reference_image and compare
 ```
 
 **Why not a single learned prototype embedding instead of an actual reference image:** a
@@ -577,10 +556,10 @@ prototype is a reasonable **[NEEDS ABLATION]** lightweight alternative worth mea
 reference-image storage/retrieval becomes an infrastructure burden, but it should be
 expected to underperform on precise print-alignment defects specifically.
 
-**Multiple approved references** are supported structurally (`garments[].reference_ids` is
-a list, `references[].status` distinguishes `golden` from `retired`) so that e.g. a
-style/color/size with two historically-approved print placements doesn't force spurious
-"misalignment" flags against whichever one wasn't picked as *the* reference.
+**Multiple approved references per style** (e.g. two acceptable print-registration
+tolerances) are not modeled by this schema — if that becomes a requirement, it should be
+reintroduced as an explicit list-valued field (e.g. `candidate_reference_images`) with its
+own dataset-loader selection logic, rather than assumed.
 
 ---
 
@@ -654,7 +633,8 @@ T-shirt Detection            (AI, lightweight, or classical if backdrop is contr
 Alignment (ORB + RANSAC)     (Classical CV)
   │
   ▼
-Reference Selection          (Rule-based lookup by style/color/size, §11)
+Reference Selection          (Resolved upstream and written into the annotation
+  │                            record's `reference_image` field, §11)
   │
   ▼
 ┌─────────────────────────────┬─────────────────────────────┐
@@ -675,8 +655,9 @@ Reference Selection          (Rule-based lookup by style/color/size, §11)
 
 ```
 Camera → GStreamer capture → Preprocessing (resize/letterbox to 800x800, normalize)
-       → T-shirt Detection gate (reject non-garment/mis-framed frames fast, cheap)
-       → Reference Selection (dict lookup, O(1))
+       → T-shirt Detection gate (reject non-garment/mis-framed frames fast, cheap;
+         classical or a separate lightweight detector, §13 — not part of this model)
+       → Reference Selection (resolved upstream, §11)
        → Alignment (ORB+RANSAC, classical, ~5-15ms on CPU)
        → Siamese Instance Segmentation (the model in this document)
        → Post-processing (NMS + mask assembly, outside the exported graph, §15)
@@ -712,8 +693,9 @@ Camera → GStreamer capture → Preprocessing (resize/letterbox to 800x800, nor
 - **Failure handling:** if alignment score (from ORB+RANSAC) is below a sanity threshold,
   do **not** feed the pair into the Siamese model at all — route to manual review instead;
   a badly-misaligned pair will produce a meaningless (and potentially high-confidence-wrong)
-  comparison. Similarly, if `valid_tshirt` score is low, short-circuit before running the
-  full segmentation head.
+  comparison. Similarly, the upstream T-shirt Detection gate (§13) should short-circuit
+  before this model runs at all on a non-garment/empty frame — this model no longer exposes
+  its own `valid_tshirt` output (§3.5, removed).
 
 ---
 
@@ -724,7 +706,7 @@ PyTorch (ExportWrapper around SiameseInstanceSegmentation)
    │  torch.onnx.export, opset 17, static shapes
    ▼
 ONNX  (dense per-point outputs: cls_logits, box_reg, centerness, mask_coeff, points,
-        prototypes, tshirt_logit, both embeddings — NMS and mask-crop NOT in the graph)
+        prototypes, both embeddings — NMS and mask-crop NOT in the graph)
    │  openvino.convert_model / ovc
    ▼
 OpenVINO IR (.xml/.bin), FP16 by default
@@ -784,7 +766,7 @@ The UI should render, per inspected frame:
 │  Reference image   │  Inspected image   │  Overlay: boxes + masks +    │
 │  (golden, aligned)  │  (as captured)     │  class label + confidence    │
 └───────────────────┴───────────────────┴──────────────────────────────┘
-   valid_tshirt = 0.99      embedding_distance = 0.41 (threshold 0.35 -> anomalous)
+   embedding_distance = 0.41 (threshold 0.35 -> anomalous)
    Instance 1: print_crack   conf 0.96   bbox (640,300,820,390)
    Instance 2: spot_stain    conf 0.91   bbox (1200,900,1260,955)
 ```
@@ -811,11 +793,9 @@ since it's mainly useful for engineering debugging/audits, not routine line oper
 | `models/siamese_encoder.py` | `FPN`, `GeMPooling`, `SiameseEncoder` (weight-shared two-branch forward). |
 | `models/feature_comparison.py` | `LevelFusion`, `CrossAttentionFusion`, `FeatureComparison` (config-switchable comparison mode). |
 | `models/segmentation_head.py` | `ConvTower`, `Scale`, `ProtoNet`, `SegmentationHead`, `generate_points`, `assemble_instance_masks`, `roi_crop_resize`. |
-| `models/classification_head.py` | `TshirtValidityHead`, `GarmentAttributeHead`. |
 | `models/siamese_instance_segmentation.py` | Top-level model, FCOS-style `assign_targets`, inference `postprocess` (decode + NMS + mask assembly). |
 | `losses/detection_loss.py` | `sigmoid_focal_loss`, `ciou_loss`, `DetectionLoss`. |
 | `losses/segmentation_loss.py` | `dice_loss`, `tversky_loss`, `SegmentationLoss`. |
-| `losses/classification_loss.py` | `TshirtClassificationLoss`, `LabelSmoothingCE`. |
 | `losses/contrastive_loss.py` | `ContrastiveLoss`, `CosineEmbeddingLossWrapper`, `TripletLoss`, `InfoNCELoss`, `build_siamese_loss`. |
 | `losses/total_loss.py` | `TotalLoss` — combines all of the above with configured weights, per-image target assignment loop. |
 | `datasets/dataset.py` | `SiameseDefectDataset` (custom-JSON loader, polygon/RLE decode), `siamese_collate_fn`. |
@@ -823,7 +803,7 @@ since it's mainly useful for engineering debugging/audits, not routine line oper
 | `datasets/pair_sampler.py` | `HardNegativePool`, `SiamesePairBatchSampler`, `split_positive_negative`. |
 | `training/scheduler.py` | `WarmupCosineScheduler`. |
 | `training/train.py` | Full training loop (AMP, grad accumulation, EMA, hard-negative refresh, checkpointing, early stopping). |
-| `training/validate.py` | Full-decode validation loop producing mask mAP / AP50 / AP75 / tshirt accuracy. |
+| `training/validate.py` | Full-decode validation loop producing mask mAP / AP50 / AP75. |
 | `inference/predict.py` | Single-image-pair inference CLI, structured instance output, anomaly flag. |
 | `evaluation/metrics.py` | All metrics from §10. |
 | `export/export_openvino.py` | `ExportWrapper`, ONNX export, OpenVINO IR conversion, NNCF INT8 quantization. |
@@ -956,15 +936,15 @@ decision (§12/§13), not replacing the supervised classifier.
 
 | Failure case | Mitigation |
 |---|---|
-| Wrong reference selected (style/color/size lookup error) | Cross-check with `GarmentAttributeHead` prediction (§11); flag mismatch for manual review rather than silently comparing against the wrong golden image. |
-| Reference image itself has degraded (dust on lens, faded over time) | Track reference `approved_date`/`status`; periodically re-validate references against a curated "reference of references" or require re-approval after N months. |
+| Wrong reference selected (upstream lookup error, §11) | This model has no way to detect it internally now that reference selection is fully upstream and unvalidated by any garment-attribute check; flag mismatches at the upstream reference-resolution step, before the annotation/inference record is ever written. |
+| Reference image itself has degraded (dust on lens, faded over time) | Reference approval/retirement tracking (approved-date, golden/retired status) is no longer part of this schema (§5.2); if this becomes a requirement again, track it in whatever upstream system resolves `reference_image`, not in the defect annotation. |
 | Alignment failure (ORB+RANSAC low confidence) | Route to manual review before the Siamese model runs at all (§14) — never feed a low-confidence-aligned pair into the comparison. |
-| Fabric wrinkle/deformation misclassified as `fabric_damage` | Ensure training "good" set includes realistic wrinkled captures (§6.2); consider `severity` field to route low-severity flags to a second-look queue rather than an automatic reject. |
+| Fabric wrinkle/deformation misclassified as `fabric_damage` | Ensure training "good" set includes realistic wrinkled captures (§6.2). |
 | Lighting drift across shifts/days | Independent photometric augmentation (§9) + hard-negative mining (§6.3) specifically targets this; monitor FRR trend over time in production as an early-warning signal of augmentation coverage gaps. |
 | Rare defect class (`fabric_damage`, `other_anomaly`) has too few examples | Per-class metrics (§10) surface this rather than hiding it in a macro average; consider focal-loss `α` re-weighting per class, or the (flagged, not default) synthetic copy-paste augmentation (§9) as a deliberate, tracked mitigation. |
 | Truly novel defect type never seen in training | Embedding-distance anomaly flag (§12) + Anomalib cross-check (§13); explicitly **not** solved by the supervised classifier alone. |
 | INT8 quantization silently degrades subtle-defect classes | Mandatory per-class re-validation after quantization (§15), not just a global accuracy check. |
-| Model over-confident on out-of-distribution input (not a T-shirt, empty frame, wrong garment type) | `TshirtValidityHead` gate runs first (§3.5/§14) and should short-circuit the rest of the pipeline. |
+| Model over-confident on out-of-distribution input (not a T-shirt, empty frame, wrong garment type) | The upstream T-shirt Detection gate (§13/§14) — not a head of this model — should short-circuit the rest of the pipeline before this model ever runs. |
 
 ---
 

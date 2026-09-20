@@ -55,7 +55,7 @@ def build_dataloader(cfg: dict, split_file: str, train: bool) -> DataLoader:
 
 def move_targets(targets, device):
     for t in targets:
-        for k in ("boxes", "labels", "masks", "tshirt_valid", "pair_label"):
+        for k in ("boxes", "labels", "masks", "pair_label"):
             t[k] = t[k].to(device)
     return targets
 

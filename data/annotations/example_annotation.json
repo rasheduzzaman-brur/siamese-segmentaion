@@ -1,111 +1,46 @@
 {
   "info": {
-    "version": "1.0",
-    "description": "COCO-extended annotation schema for Siamese T-shirt defect inspection",
+    "version": "2.0",
+    "description": "Defect annotation schema for Siamese T-shirt defect inspection: each inspected image is paired with a reference image and a list of defect instances (class, bounding box, segmentation mask only)",
     "defect_classes": [
       "print_crack", "spot_stain", "ghosting", "print_missing",
       "print_misalignment", "color_deviation", "fabric_damage", "other_anomaly"
     ]
   },
 
-  "garments": [
-    {
-      "garment_id": "ST001_BLACK_L_0000123",
-      "style_id": "ST001",
-      "color": "black",
-      "size": "L",
-      "design": "crew_neck_logo_front",
-      "production_order_id": "PO-2026-0456",
-      "production_line_id": "LINE_03",
-      "reference_ids": ["REF_ST001_BLACK_L_v1", "REF_ST001_BLACK_L_v2"]
-    }
-  ],
-
-  "references": [
-    {
-      "reference_id": "REF_ST001_BLACK_L_v1",
-      "style_id": "ST001",
-      "color": "black",
-      "size": "L",
-      "file_name": "reference/ST001_BLACK_L_v1.png",
-      "width": 2048,
-      "height": 2048,
-      "camera_id": "CAM_REF_01",
-      "tshirt_bbox": [120, 80, 1820, 1960],
-      "tshirt_mask": {"format": "polygon", "points": [[120, 80], [1940, 80], [1940, 2040], [120, 2040]]},
-      "approved_date": "2026-06-01",
-      "approved_by": "qa_lead_01",
-      "status": "golden"
-    }
-  ],
-
   "images": [
     {
       "image_id": "tshirt_001_defect_001",
-      "garment_id": "ST001_BLACK_L_0000123",
-      "reference_id": "REF_ST001_BLACK_L_v1",
       "file_name": "images/tshirt_001_defect_001.png",
+      "reference_image": "reference/ST001_BLACK_L_v1.png",
       "width": 2048,
       "height": 2048,
-      "camera_id": "CAM_LINE_03_TOP",
-      "capture_timestamp": "2026-09-10T08:12:33Z",
-      "lighting_condition": "standard_led_5000k",
-      "tshirt_bbox": [110, 95, 1830, 1955],
-      "tshirt_mask": {"format": "polygon", "points": [[110, 95], [1930, 95], [1930, 2035], [110, 2035]]},
-      "valid_tshirt": true,
-      "alignment": {
-        "method": "orb_ransac",
-        "homography": [[1.001, 0.003, -4.2], [-0.002, 0.998, 3.1], [0.0, 0.0, 1.0]],
-        "alignment_score": 0.97
-      },
       "defects": [
         {
-          "instance_id": "tshirt_001_defect_001_inst_1",
           "category": "print_crack",
-          "category_id": 0,
           "bbox": [640, 300, 180, 90],
           "segmentation": {
             "format": "polygon",
             "points": [[640, 300], [820, 300], [820, 390], [640, 390]]
-          },
-          "area": 12500,
-          "severity": "major",
-          "iscrowd": 0
+          }
         },
         {
-          "instance_id": "tshirt_001_defect_001_inst_2",
           "category": "spot_stain",
-          "category_id": 1,
           "bbox": [1200, 900, 60, 55],
           "segmentation": {
             "format": "rle",
             "size": [2048, 2048],
             "counts": "PLACEHOLDER_RLE_STRING"
-          },
-          "area": 2400,
-          "severity": "minor",
-          "iscrowd": 0
+          }
         }
       ]
     },
     {
       "image_id": "tshirt_001_good_001",
-      "garment_id": "ST001_BLACK_L_0000123",
-      "reference_id": "REF_ST001_BLACK_L_v1",
       "file_name": "images/tshirt_001_good_001.png",
+      "reference_image": "reference/ST001_BLACK_L_v1.png",
       "width": 2048,
       "height": 2048,
-      "camera_id": "CAM_LINE_03_TOP",
-      "capture_timestamp": "2026-09-10T08:13:01Z",
-      "lighting_condition": "standard_led_5000k",
-      "tshirt_bbox": [115, 90, 1825, 1958],
-      "tshirt_mask": {"format": "polygon", "points": [[115, 90], [1935, 90], [1935, 2038], [115, 2038]]},
-      "valid_tshirt": true,
-      "alignment": {
-        "method": "orb_ransac",
-        "homography": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        "alignment_score": 0.99
-      },
       "defects": []
     }
   ]

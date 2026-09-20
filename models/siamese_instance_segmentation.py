@@ -19,7 +19,6 @@ from models.feature_comparison import FeatureComparison
 from models.segmentation_head import (
     SegmentationHead, STRIDES, SCALE_RANGES, generate_points, assemble_instance_masks,
 )
-from models.classification_head import TshirtValidityHead
 
 
 def decode_boxes(points: torch.Tensor, box_reg: torch.Tensor) -> torch.Tensor:
@@ -46,16 +45,12 @@ class SiameseInstanceSegmentation(nn.Module):
             num_convs=mcfg["seg_head"]["num_convs"],
             proto_channels=mcfg["seg_head"]["proto_channels"],
         )
-        self.tshirt_head = TshirtValidityHead(
-            fpn_ch, mcfg["classification_head"]["tshirt_hidden_dim"],
-        )
         self.mask_out_size = mcfg["seg_head"]["mask_out_size"]
 
     def forward(self, reference: torch.Tensor, inspected: torch.Tensor) -> Dict:
         enc = self.encoder(reference, inspected)
         fused = self.comparison(enc["reference"], enc["inspected"])
         head_out = self.seg_head(fused)
-        tshirt_logit = self.tshirt_head(enc["inspected"]["p5"])
 
         shapes = {lvl: tuple(f.shape[-2:]) for lvl, f in fused.items()}
         points = generate_points(shapes, inspected.device)
@@ -64,7 +59,6 @@ class SiameseInstanceSegmentation(nn.Module):
             "levels": head_out["levels"],
             "prototypes": head_out["prototypes"],
             "points": points,
-            "tshirt_logit": tshirt_logit,
             "reference_embedding": enc["reference_embedding"],
             "inspected_embedding": enc["inspected_embedding"],
         }

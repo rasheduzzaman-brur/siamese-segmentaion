@@ -36,7 +36,6 @@ data:
     hard_negative_ratio: 0.3     # fraction of "good vs good" pairs drawn from hard-negative pool
     hard_negative_pool_size: 5000
     hard_negative_refresh_every_epochs: 1
-    max_references_per_garment: 3
 
 model:
   backbone:
@@ -55,9 +54,6 @@ model:
     proto_channels: 32
     proto_level: p3
     mask_out_size: 28            # mask resolution before final upsample to box size
-  classification_head:
-    tshirt_feature_level: p5
-    tshirt_hidden_dim: 256
   embedding:
     dim: 256
     pooling: gem                 # generalized-mean pooling
@@ -68,7 +64,6 @@ loss:
     segmentation: 2.0
     classification: 1.0
     siamese: 0.5
-    tshirt: 0.5
   detection:
     focal_alpha: 0.25
     focal_gamma: 2.0
@@ -112,6 +107,6 @@ inference:
 export:
   onnx_opset: 17
   input_names: [reference, input]
-  output_names: [boxes, scores, labels, masks, tshirt_valid, embedding_distance]
+  output_names: [boxes, scores, labels, masks, embedding_distance]
   dynamic_axes: false           # fixed shape preferred for OpenVINO + industrial line
   precision: [fp32, fp16, int8]

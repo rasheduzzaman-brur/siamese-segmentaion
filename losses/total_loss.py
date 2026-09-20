@@ -6,7 +6,6 @@
                                            loss for per-instance defect class;
                                            reserved here for optional aux heads)
             + w_siam  * L_siamese        (contrastive embedding loss)
-            + w_tshirt* L_tshirt         (BCE, whole-image valid-tshirt gate)
 
 Per-task weights are config-driven (configs/config.yaml -> loss.weights) and
 should be tuned via uncertainty weighting or a short grid search once all
@@ -26,7 +25,6 @@ from models.segmentation_head import roi_crop_resize, assemble_instance_masks
 from models.siamese_instance_segmentation import SiameseInstanceSegmentation
 from losses.detection_loss import DetectionLoss
 from losses.segmentation_loss import SegmentationLoss
-from losses.classification_loss import TshirtClassificationLoss
 from losses.contrastive_loss import build_siamese_loss
 
 
@@ -42,16 +40,15 @@ class TotalLoss(nn.Module):
             num_classes, lcfg["detection"]["focal_alpha"], lcfg["detection"]["focal_gamma"])
         self.segmentation_loss = SegmentationLoss(
             lcfg["segmentation"]["bce_weight"], lcfg["segmentation"]["dice_weight"])
-        self.tshirt_loss = TshirtClassificationLoss()
         self.siamese_loss = build_siamese_loss(lcfg["siamese"])
         self._siamese_kind = lcfg["siamese"]["type"]
 
     def forward(self, outputs: Dict, targets: List[Dict]) -> Dict[str, torch.Tensor]:
         """targets: list (len B) of dicts with keys
-        boxes (M,4), labels (M,), masks (M,H,W), tshirt_valid (scalar), pair_label (scalar)
+        boxes (M,4), labels (M,), masks (M,H,W), pair_label (scalar)
         """
         batch_size = len(targets)
-        device = outputs["tshirt_logit"].device
+        device = outputs["reference_embedding"].device
 
         det_terms = {"cls_loss": [], "box_loss": [], "centerness_loss": []}
         mask_losses = []
@@ -78,9 +75,6 @@ class TotalLoss(nn.Module):
 
         detection_total = cls_loss + box_loss + centerness_loss
 
-        tshirt_targets = torch.stack([t["tshirt_valid"].float() for t in targets]).to(device)
-        tshirt_loss = self.tshirt_loss(outputs["tshirt_logit"], tshirt_targets)
-
         pair_labels = torch.stack([t["pair_label"].float() for t in targets]).to(device)
         if self._siamese_kind == "infonce":
             siamese_loss = self.siamese_loss(outputs["reference_embedding"],
@@ -91,13 +85,12 @@ class TotalLoss(nn.Module):
 
         total = (self.weights["detection"] * detection_total
                  + self.weights["segmentation"] * mask_loss
-                 + self.weights["siamese"] * siamese_loss
-                 + self.weights["tshirt"] * tshirt_loss)
+                 + self.weights["siamese"] * siamese_loss)
 
         return {
             "total": total, "detection": detection_total, "cls_loss": cls_loss,
             "box_loss": box_loss, "centerness_loss": centerness_loss,
-            "mask_loss": mask_loss, "siamese_loss": siamese_loss, "tshirt_loss": tshirt_loss,
+            "mask_loss": mask_loss, "siamese_loss": siamese_loss,
         }
 
     def _mask_loss_single(self, levels_b, points, assign, prototypes, gt, device) -> torch.Tensor:

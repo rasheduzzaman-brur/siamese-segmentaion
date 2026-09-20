@@ -61,7 +61,6 @@ class ExportWrapper(nn.Module):
             torch.cat(coeff_list, dim=1),        # (B, N_total, K)
             torch.cat(point_list, dim=1),         # (B, N_total, 2)
             out["prototypes"],                     # (B, K, Hp, Wp)
-            out["tshirt_logit"],                     # (B,)
             out["reference_embedding"],               # (B, D)
             out["inspected_embedding"],                 # (B, D)
         )
@@ -83,7 +82,7 @@ def export_onnx(cfg: dict, weights_path: str, onnx_path: str) -> None:
         wrapper, (dummy_ref, dummy_inp), onnx_path,
         input_names=["reference", "input"],
         output_names=["cls_logits", "box_reg", "centerness", "mask_coeff",
-                       "points", "prototypes", "tshirt_logit",
+                       "points", "prototypes",
                        "reference_embedding", "inspected_embedding"],
         opset_version=cfg["export"]["onnx_opset"],
         dynamic_axes=None if not cfg["export"]["dynamic_axes"] else {

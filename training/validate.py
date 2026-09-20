@@ -15,7 +15,6 @@ from evaluation.metrics import mask_map, match_predictions_to_gt
 def validate(model, val_loader, device, cfg: dict) -> Dict[str, float]:
     model.eval()
     matches_50, matches_75 = [], []
-    tshirt_correct, tshirt_total = 0, 0
 
     for batch in tqdm(val_loader, desc="validate", leave=False):
         reference = batch["reference"].to(device)
@@ -23,10 +22,6 @@ def validate(model, val_loader, device, cfg: dict) -> Dict[str, float]:
         targets = batch["targets"]
 
         outputs = model(reference, inputs)
-        tshirt_pred = (torch.sigmoid(outputs["tshirt_logit"]) > 0.5).float().cpu()
-        tshirt_gt = torch.stack([t["tshirt_valid"] for t in targets])
-        tshirt_correct += (tshirt_pred == tshirt_gt).sum().item()
-        tshirt_total += len(targets)
 
         for b, target in enumerate(targets):
             single_out = {
@@ -60,5 +55,4 @@ def validate(model, val_loader, device, cfg: dict) -> Dict[str, float]:
         "mask_mAP": (ap50 + ap75) / 2,
         "AP50": ap50,
         "AP75": ap75,
-        "tshirt_accuracy": tshirt_correct / max(1, tshirt_total),
     }

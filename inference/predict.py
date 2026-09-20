@@ -11,11 +11,11 @@ Produces the structured instance list described in the design brief:
         Bounding Box = (...)
         Mask = (...)
 
-Also reports the whole-image valid_tshirt score and the Siamese embedding
-distance (used for unknown/unseen-defect flagging, see DESIGN.md section 12).
-This module assumes the input image was already T-shirt-detected, aligned
-(ORB+RANSAC) and reference-selected upstream -- see DESIGN.md section 13 for
-where this fits in the full hybrid pipeline.
+Also reports the Siamese embedding distance (used for unknown/unseen-defect
+flagging, see DESIGN.md section 12). This module assumes the input image was
+already T-shirt-detected, aligned (ORB+RANSAC) and reference-selected
+upstream -- see DESIGN.md section 13 for where this fits in the full hybrid
+pipeline.
 """
 from __future__ import annotations
 
@@ -86,14 +86,12 @@ def predict(model: SiameseInstanceSegmentation, reference_bgr: np.ndarray, input
             "mask": paste_mask_on_image(r["mask_logits"], r["bbox"], size),
         })
 
-    tshirt_valid_score = torch.sigmoid(outputs["tshirt_logit"])[0].item()
     embedding_distance = F.pairwise_distance(
         outputs["reference_embedding"], outputs["inspected_embedding"]).item()
     is_anomalous_unseen = (embedding_distance > cfg["inference"]["anomaly_embedding_threshold"]
                             and len(instances) == 0)
 
     return {
-        "valid_tshirt": tshirt_valid_score,
         "embedding_distance": embedding_distance,
         "unknown_defect_suspected": is_anomalous_unseen,
         "instances": instances,
@@ -121,6 +119,5 @@ if __name__ == "__main__":
     for inst in result["instances"]:
         inst_display = {k: v for k, v in inst.items() if k != "mask"}
         print(inst_display)
-    print(f"valid_tshirt={result['valid_tshirt']:.3f} "
-          f"embedding_distance={result['embedding_distance']:.3f} "
+    print(f"embedding_distance={result['embedding_distance']:.3f} "
           f"unknown_defect_suspected={result['unknown_defect_suspected']}")

@@ -37,14 +37,7 @@ def _decode_segmentation(seg: Dict, height: int, width: int) -> np.ndarray:
 
 
 class SiameseDefectDataset(Dataset):
-    """One sample = one inspected image + its selected reference image.
-
-    Multiple references per garment (configs/config.yaml ->
-    data.pair_sampling.max_references_per_garment) are handled by
-    randomly choosing among `garment["reference_ids"]` at __getitem__ time
-    (acts as a mild augmentation and trains robustness to reference
-    variation -- see DESIGN.md section 11).
-    """
+    """One sample = one inspected image + its paired reference image."""
 
     def __init__(self, annotation_file: str, images_root: str, class_names: List[str],
                  transform=None, train: bool = True):
@@ -56,11 +49,7 @@ class SiameseDefectDataset(Dataset):
         self.transform = transform
         self.train = train
 
-        self.garments = {g["garment_id"]: g for g in ann["garments"]}
-        self.references = {r["reference_id"]: r for r in ann["references"]}
         self.images = ann["images"]
-
-        self.rng = np.random.default_rng(seed=0 if not train else None)
 
     def __len__(self) -> int:
         return len(self.images)
@@ -72,20 +61,10 @@ class SiameseDefectDataset(Dataset):
             raise FileNotFoundError(f"Could not read image: {path}")
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    def _select_reference(self, image_record: Dict) -> Dict:
-        garment = self.garments.get(image_record.get("garment_id"))
-        ref_ids = garment["reference_ids"] if garment else [image_record["reference_id"]]
-        if self.train and len(ref_ids) > 1:
-            ref_id = ref_ids[self.rng.integers(0, len(ref_ids))]
-        else:
-            ref_id = image_record["reference_id"]
-        return self.references[ref_id]
-
     def __getitem__(self, idx: int) -> Dict:
         record = self.images[idx]
         input_image = self._load_image(record["file_name"])
-        ref_record = self._select_reference(record)
-        reference_image = self._load_image(ref_record["file_name"])
+        reference_image = self._load_image(record["reference_image"])
 
         h, w = input_image.shape[:2]
         boxes, labels, masks = [], [], []
@@ -109,11 +88,9 @@ class SiameseDefectDataset(Dataset):
             "labels": torch.tensor(out["labels"], dtype=torch.long),
             "masks": (torch.from_numpy(np.stack(out["masks"])).float()
                       if len(out["masks"]) > 0 else torch.zeros((0, *input_t.shape[1:]))),
-            "tshirt_valid": torch.tensor(float(record.get("valid_tshirt", True))),
             # positive pair (defective) iff at least one defect instance is present
             "pair_label": torch.tensor(float(len(out["boxes"]) > 0)),
             "image_id": record["image_id"],
-            "garment_id": record.get("garment_id"),
         }
         return {"reference": ref_t, "input": input_t, "target": target}
 

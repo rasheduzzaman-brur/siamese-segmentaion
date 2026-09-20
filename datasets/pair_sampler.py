@@ -5,15 +5,15 @@ section 5):
 
   - Positive pair  (pair_label=1): reference (golden)  + defective inspected image
   - Negative pair  (pair_label=0): reference (golden)  + good inspected image
-                                    (same garment_id, no defects)
+                                    (same reference_image, no defects)
   - Hard negative  (pair_label=0): reference (golden)  + good inspected image that
                                     the model currently scores as "far" in
                                     embedding space (different lighting,
                                     fabric wrinkle/deformation, camera angle,
                                     or a *different but visually similar*
-                                    garment/size/color) -- these are the pairs
-                                    that most often cause false rejects in
-                                    production and must be over-represented.
+                                    garment) -- these are the pairs that most
+                                    often cause false rejects in production
+                                    and must be over-represented.
 
 This module implements:
   1. `SiamesePairBatchSampler` -- yields batches with a controlled ratio of
