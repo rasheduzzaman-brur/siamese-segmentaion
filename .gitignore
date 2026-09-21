@@ -7,3 +7,11 @@ export/artifacts/
 *.bin
 .venv/
 *.egg-info/
+
+# dataset content (raw exports, assembled data/prepared/, images, reference
+# images, real annotation jsons) is kept locally, not pushed to git -- only
+# the annotation schema example stays tracked
+/data/*
+!/data/annotations
+/data/annotations/*
+!/data/annotations/example_annotation.json
