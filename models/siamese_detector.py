@@ -1,14 +1,16 @@
 """Top-level model: Siamese encoder -> feature comparison -> detection /
-segmentation / classification heads.
+classification head.
 
-This is the "recommended final architecture" from DESIGN.md section 2/17:
-a single-stage (FCOS + prototype-mask) Siamese instance segmentation
-network. It intentionally avoids a two-stage RPN/RoIAlign pipeline for
-export simplicity and latency (see DESIGN.md section 15/18).
+This is the detection-only variant of the "recommended final architecture"
+from DESIGN.md section 2/17: a single-stage (FCOS-style) Siamese detector.
+It intentionally avoids a two-stage RPN/RoIAlign pipeline for export
+simplicity and latency (see DESIGN.md section 15/18), and has no
+instance-segmentation (mask) branch -- this model only localizes and
+classifies defects with bounding boxes.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
@@ -16,9 +18,7 @@ import torchvision
 
 from models.siamese_encoder import SiameseEncoder
 from models.feature_comparison import FeatureComparison
-from models.segmentation_head import (
-    SegmentationHead, STRIDES, SCALE_RANGES, generate_points, assemble_instance_masks,
-)
+from models.detection_head import DetectionHead, STRIDES, SCALE_RANGES, generate_points
 
 
 def decode_boxes(points: torch.Tensor, box_reg: torch.Tensor) -> torch.Tensor:
@@ -28,7 +28,7 @@ def decode_boxes(points: torch.Tensor, box_reg: torch.Tensor) -> torch.Tensor:
     return torch.stack([x - l, y - t, x + r, y + b], dim=1)
 
 
-class SiameseInstanceSegmentation(nn.Module):
+class SiameseDefectDetector(nn.Module):
     def __init__(self, cfg: dict):
         super().__init__()
         mcfg = cfg["model"]
@@ -40,24 +40,21 @@ class SiameseInstanceSegmentation(nn.Module):
             fpn_ch, mode=mcfg["comparison"]["mode"],
             use_cosine_channel=mcfg["comparison"]["use_cosine_channel"],
         )
-        self.seg_head = SegmentationHead(
+        self.det_head = DetectionHead(
             self.num_classes, fpn_ch,
-            num_convs=mcfg["seg_head"]["num_convs"],
-            proto_channels=mcfg["seg_head"]["proto_channels"],
+            num_convs=mcfg["det_head"]["num_convs"],
         )
-        self.mask_out_size = mcfg["seg_head"]["mask_out_size"]
 
     def forward(self, reference: torch.Tensor, inspected: torch.Tensor) -> Dict:
         enc = self.encoder(reference, inspected)
         fused = self.comparison(enc["reference"], enc["inspected"])
-        head_out = self.seg_head(fused)
+        head_out = self.det_head(fused)
 
         shapes = {lvl: tuple(f.shape[-2:]) for lvl, f in fused.items()}
         points = generate_points(shapes, inspected.device)
 
         return {
             "levels": head_out["levels"],
-            "prototypes": head_out["prototypes"],
             "points": points,
             "reference_embedding": enc["reference_embedding"],
             "inspected_embedding": enc["inspected_embedding"],
@@ -128,26 +125,24 @@ class SiameseInstanceSegmentation(nn.Module):
         return targets
 
     # ------------------------------------------------------------------
-    # Inference-time decode + NMS + mask assembly
+    # Inference-time decode + NMS
     # ------------------------------------------------------------------
     @torch.no_grad()
     def postprocess(self, outputs: Dict, image_size, score_thresh: float = 0.5,
                      nms_iou: float = 0.5, max_dets: int = 50) -> List[Dict]:
         """Single-image postprocess (call per-item for a batch)."""
         h, w = image_size
-        all_boxes, all_scores, all_labels, all_coeffs = [], [], [], []
+        all_boxes, all_scores, all_labels = [], [], []
 
         for lvl, pred in outputs["levels"].items():
             cls_logits = pred["cls_logits"][0]           # (C, Hl, Wl)
             box_reg = pred["box_reg"][0]                   # (4, Hl, Wl)
             centerness = pred["centerness"][0]              # (1, Hl, Wl)
-            coeff = pred["mask_coeff"][0]                    # (K, Hl, Wl)
             c = cls_logits.shape[0]
 
             cls_scores = cls_logits.permute(1, 2, 0).reshape(-1, c).sigmoid()
             ctr_scores = centerness.permute(1, 2, 0).reshape(-1).sigmoid()
             box_reg = box_reg.permute(1, 2, 0).reshape(-1, 4)
-            coeff = coeff.permute(1, 2, 0).reshape(-1, coeff.shape[0])
 
             scores, labels = cls_scores.max(dim=1)
             scores = scores * ctr_scores
@@ -162,7 +157,6 @@ class SiameseInstanceSegmentation(nn.Module):
             all_boxes.append(boxes)
             all_scores.append(scores[keep])
             all_labels.append(labels[keep])
-            all_coeffs.append(coeff[keep])
 
         if not all_boxes:
             return []
@@ -170,13 +164,9 @@ class SiameseInstanceSegmentation(nn.Module):
         boxes = torch.cat(all_boxes)
         scores = torch.cat(all_scores)
         labels = torch.cat(all_labels)
-        coeffs = torch.cat(all_coeffs)
 
         keep = torchvision.ops.batched_nms(boxes, scores, labels, nms_iou)[:max_dets]
-        boxes, scores, labels, coeffs = boxes[keep], scores[keep], labels[keep], coeffs[keep]
-
-        prototypes = outputs["prototypes"][0]  # (K, Hp, Wp)
-        mask_logits = assemble_instance_masks(prototypes, coeffs, boxes, self.mask_out_size)
+        boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
         results = []
         for i in range(boxes.shape[0]):
@@ -184,6 +174,5 @@ class SiameseInstanceSegmentation(nn.Module):
                 "bbox": boxes[i].tolist(),
                 "class_id": int(labels[i].item()),
                 "confidence": float(scores[i].item()),
-                "mask_logits": mask_logits[i],  # caller resizes to bbox + pastes on full image
             })
         return results

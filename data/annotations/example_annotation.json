@@ -1,47 +1,33 @@
 {
   "info": {
     "version": "2.0",
-    "description": "Defect annotation schema for Siamese T-shirt defect inspection: each inspected image is paired with a reference image and a list of defect instances (class, bounding box, segmentation mask only)",
-    "defect_classes": [
-      "print_crack", "spot_stain", "ghosting", "print_missing",
-      "print_misalignment", "color_deviation", "fabric_damage", "other_anomaly"
-    ]
+    "description": "Near-standard COCO detection annotations for Siamese T-shirt defect inspection: identical to plain COCO (images/annotations/categories) except each image also carries a reference_image path."
   },
+
+  "categories": [
+    {"id": 1, "name": "print_crack"},
+    {"id": 2, "name": "spot_stain"}
+  ],
 
   "images": [
     {
-      "image_id": "tshirt_001_defect_001",
-      "file_name": "images/tshirt_001_defect_001.png",
-      "reference_image": "reference/ST001_BLACK_L_v1.png",
+      "id": 1,
+      "file_name": "tshirt_001_defect_001.png",
+      "reference_image": "ST001_BLACK_L_v1.png",
       "width": 2048,
-      "height": 2048,
-      "defects": [
-        {
-          "category": "print_crack",
-          "bbox": [640, 300, 180, 90],
-          "segmentation": {
-            "format": "polygon",
-            "points": [[640, 300], [820, 300], [820, 390], [640, 390]]
-          }
-        },
-        {
-          "category": "spot_stain",
-          "bbox": [1200, 900, 60, 55],
-          "segmentation": {
-            "format": "rle",
-            "size": [2048, 2048],
-            "counts": "PLACEHOLDER_RLE_STRING"
-          }
-        }
-      ]
+      "height": 2048
     },
     {
-      "image_id": "tshirt_001_good_001",
-      "file_name": "images/tshirt_001_good_001.png",
-      "reference_image": "reference/ST001_BLACK_L_v1.png",
+      "id": 2,
+      "file_name": "tshirt_001_good_001.png",
+      "reference_image": "ST001_BLACK_L_v1.png",
       "width": 2048,
-      "height": 2048,
-      "defects": []
+      "height": 2048
     }
+  ],
+
+  "annotations": [
+    {"id": 1, "image_id": 1, "category_id": 1, "bbox": [640, 300, 180, 90]},
+    {"id": 2, "image_id": 1, "category_id": 2, "bbox": [1200, 900, 60, 55]}
   ]
 }

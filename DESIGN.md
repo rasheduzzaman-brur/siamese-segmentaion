@@ -1,5 +1,29 @@
 # Siamese Instance Segmentation + Defect Classification for T-shirt Inspection
 
+> **Scope change:** the implementation has since been reduced to **detection only** —
+> the instance-segmentation (prototype-mask) branch, mask coefficients, `ProtoNet`,
+> mask BCE+Dice loss, and mask mAP evaluation described throughout this document have
+> been **removed from the code**. `SegmentationHead`/`SiameseInstanceSegmentation` are
+> now `DetectionHead`/`SiameseDefectDetector` (`models/detection_head.py`,
+> `models/siamese_detector.py`), predicting only `cls_logits`/`box_reg`/`centerness`
+> per location; evaluation uses box IoU / box mAP (`evaluation/metrics.py`,
+> `training/validate.py`) instead of mask IoU / mask mAP. Every section below that
+> discusses masks, `ProtoNet`, or mask losses (§2–3.4, §7.2, §10's segmentation row,
+> §17's `segmentation_head.py`/`SiameseInstanceSegmentation` rows) documents the
+> *original* design intent, not the current code — kept for architectural context, not
+> as an accurate description of what's implemented. See `README.md` for the current
+> status.
+>
+> **Annotation schema change:** §5.2 below describes a bespoke "minimal COCO-style"
+> schema with a nested per-image `defects[]` list. The actual schema
+> (`datasets/dataset.py`, `data/annotations/example_annotation.json`) is now **plain
+> COCO** (`images`/`annotations`/`categories`, unmodified) plus exactly one added
+> field: `reference_image` on each `images[]` entry. This was a deliberate choice to
+> keep existing COCO tooling/exports (e.g. Roboflow) usable with minimal transformation
+> — see `scripts/convert_coco_to_siamese.py`, which only adds `reference_image` (and
+> optionally renames category names / prefixes `file_name`), rather than restructuring
+> annotations into a custom per-image list.
+
 Full system design for an industrial garment-inspection model. Companion to the working
 code under `models/`, `losses/`, `datasets/`, `training/`, `inference/`, `evaluation/`,
 `export/`, `configs/config.yaml`.

@@ -55,7 +55,7 @@ class GeMPooling(nn.Module):
 
     Used only for the global Siamese embedding branch (unknown-defect
     detection + auxiliary metric-learning loss), not for the dense
-    detection/segmentation heads.
+    detection head.
     """
 
     def __init__(self, p: float = 3.0, eps: float = 1e-6):

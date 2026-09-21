@@ -3,19 +3,14 @@
     python -m export.export_openvino --config configs/config.yaml --weights runs/.../best.pt \
         --out export/artifacts/siamese_defect
 
-Design choice (see DESIGN.md section 15): NMS and mask assembly are picked
-apart from the exported graph. Fixed input size + a per-point dense output
-(boxes, scores, mask coefficients, prototypes) exports cleanly to ONNX/IR
-with zero custom ops; NMS + mask crop/resize run as a small, fast NumPy/CPU
-post-processing step in the application layer (identical math to
-models.siamese_instance_segmentation.postprocess, just outside the traced
-graph). This sidesteps the two main OpenVINO export pain points:
-  1. torchvision.ops.batched_nms has a dynamic-size output that some IR
-     versions handle poorly across OpenVINO releases.
-  2. affine_grid/grid_sample based RoI cropping is supported by ONNX
-     opset>=16 but is slower to validate operator-by-operator than doing
-     the (tiny, per-detection) crop on CPU after NMS has already reduced
-     the instance count to a handful.
+Design choice (see DESIGN.md section 15): NMS is kept apart from the
+exported graph. Fixed input size + a per-point dense output (boxes, scores)
+exports cleanly to ONNX/IR with zero custom ops; NMS runs as a small, fast
+NumPy/CPU post-processing step in the application layer (identical math to
+models.siamese_detector.postprocess, just outside the traced graph). This
+sidesteps the main OpenVINO export pain point: torchvision.ops.batched_nms
+has a dynamic-size output that some IR versions handle poorly across
+OpenVINO releases.
 """
 from __future__ import annotations
 
@@ -26,7 +21,7 @@ import torch
 import torch.nn as nn
 import yaml
 
-from models.siamese_instance_segmentation import SiameseInstanceSegmentation
+from models.siamese_detector import SiameseDefectDetector
 
 
 class ExportWrapper(nn.Module):
@@ -35,14 +30,14 @@ class ExportWrapper(nn.Module):
     does not support returning a dict-of-dicts with a variable number of
     keys cleanly across opset/export-tool versions."""
 
-    def __init__(self, model: SiameseInstanceSegmentation):
+    def __init__(self, model: SiameseDefectDetector):
         super().__init__()
         self.model = model
         self.levels = ("p3", "p4", "p5", "p6", "p7")
 
     def forward(self, reference: torch.Tensor, inspected: torch.Tensor):
         out = self.model(reference, inspected)
-        cls_list, box_list, ctr_list, coeff_list, point_list = [], [], [], [], []
+        cls_list, box_list, ctr_list, point_list = [], [], [], []
 
         for lvl in self.levels:
             pred = out["levels"][lvl]
@@ -50,17 +45,13 @@ class ExportWrapper(nn.Module):
             cls_list.append(pred["cls_logits"].permute(0, 2, 3, 1).reshape(b, h * w, c))
             box_list.append(pred["box_reg"].permute(0, 2, 3, 1).reshape(b, h * w, 4))
             ctr_list.append(pred["centerness"].permute(0, 2, 3, 1).reshape(b, h * w, 1))
-            k = pred["mask_coeff"].shape[1]
-            coeff_list.append(pred["mask_coeff"].permute(0, 2, 3, 1).reshape(b, h * w, k))
             point_list.append(out["points"][lvl].unsqueeze(0).expand(b, -1, -1))
 
         return (
             torch.cat(cls_list, dim=1),      # (B, N_total, num_classes)
             torch.cat(box_list, dim=1),        # (B, N_total, 4)
             torch.cat(ctr_list, dim=1),         # (B, N_total, 1)
-            torch.cat(coeff_list, dim=1),        # (B, N_total, K)
             torch.cat(point_list, dim=1),         # (B, N_total, 2)
-            out["prototypes"],                     # (B, K, Hp, Wp)
             out["reference_embedding"],               # (B, D)
             out["inspected_embedding"],                 # (B, D)
         )
@@ -68,7 +59,7 @@ class ExportWrapper(nn.Module):
 
 def export_onnx(cfg: dict, weights_path: str, onnx_path: str) -> None:
     device = torch.device("cpu")  # export on CPU for a deployment-representative graph
-    model = SiameseInstanceSegmentation(cfg).to(device)
+    model = SiameseDefectDetector(cfg).to(device)
     ckpt = torch.load(weights_path, map_location=device)
     model.load_state_dict(ckpt.get("ema_model", ckpt.get("model", ckpt)))
     model.eval()
@@ -81,8 +72,8 @@ def export_onnx(cfg: dict, weights_path: str, onnx_path: str) -> None:
     torch.onnx.export(
         wrapper, (dummy_ref, dummy_inp), onnx_path,
         input_names=["reference", "input"],
-        output_names=["cls_logits", "box_reg", "centerness", "mask_coeff",
-                       "points", "prototypes",
+        output_names=["cls_logits", "box_reg", "centerness",
+                       "points",
                        "reference_embedding", "inspected_embedding"],
         opset_version=cfg["export"]["onnx_opset"],
         dynamic_axes=None if not cfg["export"]["dynamic_axes"] else {

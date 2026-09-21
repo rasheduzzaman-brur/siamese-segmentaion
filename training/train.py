@@ -3,7 +3,7 @@
     python -m training.train --config configs/config.yaml
 
 Covers: AMP mixed precision, gradient accumulation, EMA, warmup+cosine LR,
-periodic hard-negative pool refresh, and early stopping on val/mask_mAP.
+periodic hard-negative pool refresh, and early stopping on val/box_mAP.
 See DESIGN.md section 8 for the full staged-training rationale (backbone
 frozen warm-up -> joint fine-tune -> hard-negative mining phase).
 """
@@ -23,7 +23,7 @@ from datasets.pair_sampler import (
     SiamesePairBatchSampler, HardNegativePool, split_positive_negative,
 )
 from datasets.transforms import SiamesePairTransform
-from models.siamese_instance_segmentation import SiameseInstanceSegmentation
+from models.siamese_detector import SiameseDefectDetector
 from losses.total_loss import TotalLoss
 from training.scheduler import WarmupCosineScheduler
 from training.validate import validate
@@ -33,7 +33,7 @@ def build_dataloader(cfg: dict, split_file: str, train: bool) -> DataLoader:
     transform = SiamesePairTransform(tuple(cfg["data"]["image_size"]), train=train)
     dataset = SiameseDefectDataset(
         split_file, cfg["data"]["images_dir"], cfg["data"]["defect_classes"],
-        transform=transform, train=train,
+        transform=transform, train=train, reference_root=cfg["data"]["reference_dir"],
     )
     if train:
         groups = split_positive_negative(dataset)
@@ -55,7 +55,7 @@ def build_dataloader(cfg: dict, split_file: str, train: bool) -> DataLoader:
 
 def move_targets(targets, device):
     for t in targets:
-        for k in ("boxes", "labels", "masks", "pair_label"):
+        for k in ("boxes", "labels", "pair_label"):
             t[k] = t[k].to(device)
     return targets
 
@@ -64,7 +64,7 @@ def train(cfg: dict):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(cfg["experiment"]["output_dir"], exist_ok=True)
 
-    model = SiameseInstanceSegmentation(cfg).to(device)
+    model = SiameseDefectDetector(cfg).to(device)
     ema_model = copy.deepcopy(model).eval()
     for p in ema_model.parameters():
         p.requires_grad = False

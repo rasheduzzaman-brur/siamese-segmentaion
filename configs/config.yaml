@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Siamese Instance Segmentation + Defect Classification — base configuration
+# Siamese Defect Detection + Classification — base configuration
 # ---------------------------------------------------------------------------
 
 experiment:
@@ -10,26 +10,22 @@ experiment:
   grad_accum_steps: 2           # effective batch = batch_size * grad_accum_steps
 
 data:
-  root: data/
-  reference_dir: data/reference
-  images_dir: data/images
-  annotations_file: data/annotations/annotations.json
-  train_split: data/annotations/train.json
-  val_split: data/annotations/val.json
-  test_split: data/annotations/test.json
+  # self-contained dataset assembled by scripts/convert_coco_to_siamese.py --copy-to
+  # (images/reference copied alongside the annotations, see data/prepared/)
+  root: data/prepared/
+  reference_dir: data/prepared/reference
+  images_dir: data/prepared/images
+  train_split: data/prepared/annotations/train.json
+  val_split: data/prepared/annotations/val.json
+  test_split: data/prepared/annotations/test.json
   image_size: [800, 800]        # (H, W), letterboxed, stride-32 aligned
   num_workers: 8
   pin_memory: true
 
   defect_classes:
-    - print_crack
-    - spot_stain
+    - crack
     - ghosting
-    - print_missing
-    - print_misalignment
-    - color_deviation
-    - fabric_damage
-    - other_anomaly
+    - spot
 
   pair_sampling:
     positive_ratio: 0.5          # fraction of defective (positive) pairs per batch
@@ -49,11 +45,8 @@ model:
     mode: concat_diff_residual   # options: concat, abs_diff, subtract, cosine, concat_diff_residual, cross_attention
     reduce_channels: 256
     use_cosine_channel: true
-  seg_head:
+  det_head:
     num_convs: 4
-    proto_channels: 32
-    proto_level: p3
-    mask_out_size: 28            # mask resolution before final upsample to box size
   embedding:
     dim: 256
     pooling: gem                 # generalized-mean pooling
@@ -61,7 +54,6 @@ model:
 loss:
   weights:
     detection: 1.0
-    segmentation: 2.0
     classification: 1.0
     siamese: 0.5
   detection:
@@ -69,9 +61,6 @@ loss:
     focal_gamma: 2.0
     box_loss: ciou
     centerness: bce
-  segmentation:
-    bce_weight: 1.0
-    dice_weight: 1.0
   classification:
     label_smoothing: 0.05
   siamese:
@@ -90,7 +79,7 @@ train:
   min_lr_ratio: 0.01
   ema_decay: 0.999
   early_stopping:
-    metric: val/mask_mAP
+    metric: val/box_mAP
     patience: 15
     mode: max
   hard_negative_mining:
@@ -107,6 +96,6 @@ inference:
 export:
   onnx_opset: 17
   input_names: [reference, input]
-  output_names: [boxes, scores, labels, masks, embedding_distance]
+  output_names: [boxes, scores, labels, embedding_distance]
   dynamic_axes: false           # fixed shape preferred for OpenVINO + industrial line
   precision: [fp32, fp16, int8]

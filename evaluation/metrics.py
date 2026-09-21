@@ -1,8 +1,7 @@
 """Evaluation metrics for every task head (see DESIGN.md section 10).
 
-  - T-shirt validity gate      : accuracy / precision / recall / F1
   - Defect classification      : per-class precision/recall/F1 + confusion matrix
-  - Instance segmentation      : mask IoU/Dice, AP50, AP75, mask mAP (COCO-style)
+  - Object detection            : box IoU, AP50, AP75, box mAP (COCO-style)
   - Industrial decision metrics: false reject rate (FRR), false accept rate (FAR),
                                   defect-recall (garment-level), latency/FPS
 """
@@ -11,20 +10,18 @@ from __future__ import annotations
 from typing import Dict, List
 
 import numpy as np
-import torch
 
 
-def mask_iou(mask_a: torch.Tensor, mask_b: torch.Tensor, eps: float = 1e-6) -> float:
-    a, b = (mask_a > 0.5), (mask_b > 0.5)
-    inter = (a & b).sum().item()
-    union = (a | b).sum().item()
+def box_iou(box_a: List[float], box_b: List[float], eps: float = 1e-6) -> float:
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1, inter_y1 = max(ax1, bx1), max(ay1, by1)
+    inter_x2, inter_y2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0.0, inter_x2 - inter_x1) * max(0.0, inter_y2 - inter_y1)
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
     return inter / (union + eps)
-
-
-def mask_dice(mask_a: torch.Tensor, mask_b: torch.Tensor, eps: float = 1e-6) -> float:
-    a, b = (mask_a > 0.5).float(), (mask_b > 0.5).float()
-    inter = (a * b).sum().item()
-    return (2 * inter) / (a.sum().item() + b.sum().item() + eps)
 
 
 def compute_ap(recalls: np.ndarray, precisions: np.ndarray) -> float:
@@ -40,8 +37,8 @@ def compute_ap(recalls: np.ndarray, precisions: np.ndarray) -> float:
     return float(ap)
 
 
-def match_predictions_to_gt(pred_masks: List[torch.Tensor], pred_labels: List[int],
-                             pred_scores: List[float], gt_masks: List[torch.Tensor],
+def match_predictions_to_gt(pred_boxes: List[List[float]], pred_labels: List[int],
+                             pred_scores: List[float], gt_boxes: List[List[float]],
                              gt_labels: List[int], iou_thresh: float) -> Dict:
     """Greedy one-to-one matching by descending score, per class. Returns
     per-prediction TP/FP flags for mAP accumulation."""
@@ -52,10 +49,10 @@ def match_predictions_to_gt(pred_masks: List[torch.Tensor], pred_labels: List[in
 
     for rank, i in enumerate(order):
         best_iou, best_j = 0.0, -1
-        for j, (gm, gl) in enumerate(zip(gt_masks, gt_labels)):
+        for j, (gb, gl) in enumerate(zip(gt_boxes, gt_labels)):
             if j in matched_gt or gl != pred_labels[i]:
                 continue
-            iou = mask_iou(pred_masks[i], gm)
+            iou = box_iou(pred_boxes[i], gb)
             if iou > best_iou:
                 best_iou, best_j = iou, j
         if best_iou >= iou_thresh and best_j >= 0:
@@ -63,10 +60,10 @@ def match_predictions_to_gt(pred_masks: List[torch.Tensor], pred_labels: List[in
             matched_gt.add(best_j)
         else:
             fp[rank] = 1
-    return {"tp": tp, "fp": fp, "num_gt": len(gt_masks)}
+    return {"tp": tp, "fp": fp, "num_gt": len(gt_boxes)}
 
 
-def mask_map(all_matches: List[Dict], iou_thresh_label: str = "AP50") -> float:
+def box_map(all_matches: List[Dict]) -> float:
     tp = np.concatenate([m["tp"] for m in all_matches]) if all_matches else np.array([])
     fp = np.concatenate([m["fp"] for m in all_matches]) if all_matches else np.array([])
     num_gt = sum(m["num_gt"] for m in all_matches)

@@ -9,7 +9,6 @@ Produces the structured instance list described in the design brief:
         Class = Print Crack
         Confidence = 0.96
         Bounding Box = (...)
-        Mask = (...)
 
 Also reports the Siamese embedding distance (used for unknown/unseen-defect
 flagging, see DESIGN.md section 12). This module assumes the input image was
@@ -20,7 +19,7 @@ pipeline.
 from __future__ import annotations
 
 import argparse
-from typing import Dict, List
+from typing import Dict
 
 import cv2
 import numpy as np
@@ -28,11 +27,11 @@ import torch
 import torch.nn.functional as F
 import yaml
 
-from models.siamese_instance_segmentation import SiameseInstanceSegmentation
+from models.siamese_detector import SiameseDefectDetector
 
 
-def load_model(cfg: dict, weights_path: str, device: torch.device) -> SiameseInstanceSegmentation:
-    model = SiameseInstanceSegmentation(cfg).to(device)
+def load_model(cfg: dict, weights_path: str, device: torch.device) -> SiameseDefectDetector:
+    model = SiameseDefectDetector(cfg).to(device)
     ckpt = torch.load(weights_path, map_location=device)
     model.load_state_dict(ckpt.get("ema_model", ckpt.get("model", ckpt)))
     model.eval()
@@ -47,22 +46,8 @@ def preprocess(image_bgr: np.ndarray, size) -> torch.Tensor:
     return tensor.unsqueeze(0)
 
 
-def paste_mask_on_image(mask_logits: torch.Tensor, box: List[float], image_size) -> np.ndarray:
-    h, w = image_size
-    x1, y1, x2, y2 = [int(round(v)) for v in box]
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w, x2), min(h, y2)
-    if x2 <= x1 or y2 <= y1:
-        return np.zeros((h, w), dtype=np.uint8)
-    mask_prob = torch.sigmoid(mask_logits).unsqueeze(0).unsqueeze(0)
-    resized = F.interpolate(mask_prob, size=(y2 - y1, x2 - x1), mode="bilinear", align_corners=False)
-    full = np.zeros((h, w), dtype=np.uint8)
-    full[y1:y2, x1:x2] = (resized.squeeze().cpu().numpy() > 0.5).astype(np.uint8)
-    return full
-
-
 @torch.no_grad()
-def predict(model: SiameseInstanceSegmentation, reference_bgr: np.ndarray, input_bgr: np.ndarray,
+def predict(model: SiameseDefectDetector, reference_bgr: np.ndarray, input_bgr: np.ndarray,
             cfg: dict, device: torch.device) -> Dict:
     size = tuple(cfg["data"]["image_size"])
     ref_t = preprocess(reference_bgr, size).to(device)
@@ -83,7 +68,6 @@ def predict(model: SiameseInstanceSegmentation, reference_bgr: np.ndarray, input
             "class": class_names[r["class_id"]],
             "confidence": round(r["confidence"], 4),
             "bounding_box": [round(v, 1) for v in r["bbox"]],
-            "mask": paste_mask_on_image(r["mask_logits"], r["bbox"], size),
         })
 
     embedding_distance = F.pairwise_distance(
@@ -117,7 +101,6 @@ if __name__ == "__main__":
     result = predict(model, reference_bgr, input_bgr, cfg, device)
 
     for inst in result["instances"]:
-        inst_display = {k: v for k, v in inst.items() if k != "mask"}
-        print(inst_display)
+        print(inst)
     print(f"embedding_distance={result['embedding_distance']:.3f} "
           f"unknown_defect_suspected={result['unknown_defect_suspected']}")

@@ -40,7 +40,7 @@ class HardNegativePool:
     (data.pair_sampling.hard_negative_pool_size /
     hard_negative_refresh_every_epochs) -- refreshing every epoch is
     affordable because it only requires a forward pass through the encoder
-    (no detection/segmentation heads), typically <5% of one training epoch.
+    (no detection head), typically <5% of one training epoch.
     """
 
     def __init__(self, negative_indices: List[int], pool_size: int = 5000):
@@ -118,5 +118,6 @@ class SiamesePairBatchSampler(Sampler):
 def split_positive_negative(dataset) -> Dict[str, List[int]]:
     positive, negative = [], []
     for i, record in enumerate(dataset.images):
-        (positive if record.get("defects") else negative).append(i)
+        has_defect = len(dataset.annotations_by_image.get(record["id"], [])) > 0
+        (positive if has_defect else negative).append(i)
     return {"positive": positive, "negative": negative}

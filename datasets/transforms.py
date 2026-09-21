@@ -4,7 +4,7 @@ Key rule (see DESIGN.md section 9): augmentation must never create or erase
 a defect region, and it must preserve the meaning of "reference vs.
 inspected" difference. That splits every transform into one of two buckets:
 
-  SHARED / joint (applied to input image + its boxes/masks together, so
+  SHARED / joint (applied to input image + its boxes together, so
   labels stay pixel-aligned):
       rotation, translation, scale, perspective, horizontal flip
       -> geometric only. Never Cutout/CutMix/random-erasing on the input
@@ -83,10 +83,9 @@ class SiamesePairTransform:
         self.ref_geo_jitter = build_reference_geometric_jitter() if train else A.Compose([])
 
     def __call__(self, input_image: np.ndarray, reference_image: np.ndarray,
-                 boxes: List[List[float]], labels: List[int],
-                 masks: List[np.ndarray]) -> Dict:
+                 boxes: List[List[float]], labels: List[int]) -> Dict:
         geo_out = self.shared_geo(
-            image=input_image, masks=masks,
+            image=input_image,
             bboxes=boxes, labels=labels,
         )
         input_image_t = self.photo_input(image=geo_out["image"])["image"]
@@ -99,5 +98,4 @@ class SiamesePairTransform:
             "reference_image": reference_image_t,
             "boxes": geo_out["bboxes"],
             "labels": geo_out["labels"],
-            "masks": geo_out.get("masks", []),
         }
