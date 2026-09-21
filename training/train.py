@@ -83,7 +83,10 @@ def train(cfg: dict):
     scheduler = WarmupCosineScheduler(optimizer, warmup_steps, total_steps,
                                        cfg["train"]["min_lr_ratio"])
 
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg["experiment"]["amp"])
+    # GradScaler only applies to CUDA fp16 training; torch.autocast below still
+    # follows the config flag directly since CPU bf16 autocast is valid and
+    # doesn't need loss scaling.
+    scaler = torch.amp.GradScaler(device.type, enabled=cfg["experiment"]["amp"] and device.type == "cuda")
     ema_decay = cfg["train"]["ema_decay"]
 
     best_metric, epochs_without_improve = -1.0, 0

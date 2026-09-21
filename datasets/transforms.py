@@ -34,17 +34,17 @@ def build_shared_geometric_transform(image_size: Tuple[int, int], train: bool) -
     if not train:
         return A.Compose(
             [A.LongestMaxSize(max_size=max(h, w)),
-             A.PadIfNeeded(h, w, border_mode=cv2.BORDER_CONSTANT, value=0)],
+             A.PadIfNeeded(h, w, border_mode=cv2.BORDER_CONSTANT, fill=0)],
             bbox_params=A.BboxParams(format="pascal_voc", label_fields=["labels"]),
         )
     return A.Compose(
         [
             A.LongestMaxSize(max_size=max(h, w)),
-            A.PadIfNeeded(h, w, border_mode=cv2.BORDER_CONSTANT, value=0),
+            A.PadIfNeeded(h, w, border_mode=cv2.BORDER_CONSTANT, fill=0),
             A.HorizontalFlip(p=0.5),
             A.Affine(rotate=(-8, 8), translate_percent=(-0.05, 0.05),
                      scale=(0.95, 1.05), shear=(-3, 3), p=0.7,
-                     mode=cv2.BORDER_CONSTANT, cval=0),
+                     border_mode=cv2.BORDER_CONSTANT, fill=0),
             A.Perspective(scale=(0.02, 0.05), p=0.3),
         ],
         bbox_params=A.BboxParams(format="pascal_voc", label_fields=["labels"], min_visibility=0.3),
@@ -69,7 +69,7 @@ def build_reference_geometric_jitter() -> A.Compose:
     reference branch, to teach tolerance to imperfect alignment."""
     return A.Compose([
         A.Affine(rotate=(-3, 3), translate_percent=(-0.02, 0.02),
-                  scale=(0.97, 1.03), p=0.5, mode=cv2.BORDER_CONSTANT, cval=0),
+                  scale=(0.97, 1.03), p=0.5, border_mode=cv2.BORDER_CONSTANT, fill=0),
     ])
 
 
