@@ -96,21 +96,44 @@ class SiamesePairBatchSampler(Sampler):
         self.num_batches = num_batches
         self.rng = np.random.default_rng(seed)
 
+        if not self.positive_indices:
+            print("WARNING: SiamesePairBatchSampler has zero positive (defective) pairs -- "
+                  "every batch will be drawn from negatives only.")
+        if not self.negative_indices:
+            print("WARNING: SiamesePairBatchSampler has zero negative (good/no-defect) pairs -- "
+                  "every batch will be drawn from positives only; hard-negative mining and the "
+                  "false-reject-rate signal (DESIGN.md section 6/10) are inactive until some "
+                  "'good' images are added to the dataset.")
+        if not self.positive_indices and not self.negative_indices:
+            raise ValueError("SiamesePairBatchSampler: dataset has no images at all.")
+
     def __len__(self) -> int:
         return self.num_batches
 
     def __iter__(self):
-        n_pos = int(round(self.batch_size * self.positive_ratio))
-        n_neg = self.batch_size - n_pos
-        n_hard = int(round(n_neg * self.hard_negative_ratio))
-        n_easy = n_neg - n_hard
-
         for _ in range(self.num_batches):
             batch = []
-            batch += list(self.rng.choice(self.positive_indices, n_pos, replace=True))
-            if n_hard > 0 and len(self.hard_pool.hard_indices) > 0:
-                batch += list(self.rng.choice(self.hard_pool.hard_indices, n_hard, replace=True))
-            batch += list(self.rng.choice(self.negative_indices, n_easy, replace=True))
+
+            if self.positive_indices and self.negative_indices:
+                n_pos = int(round(self.batch_size * self.positive_ratio))
+                n_neg = self.batch_size - n_pos
+            elif self.positive_indices:
+                n_pos, n_neg = self.batch_size, 0
+            else:
+                n_pos, n_neg = 0, self.batch_size
+
+            if n_pos:
+                batch += list(self.rng.choice(self.positive_indices, n_pos, replace=True))
+
+            if n_neg:
+                n_hard = (int(round(n_neg * self.hard_negative_ratio))
+                          if self.hard_pool.hard_indices else 0)
+                n_easy = n_neg - n_hard
+                if n_hard:
+                    batch += list(self.rng.choice(self.hard_pool.hard_indices, n_hard, replace=True))
+                if n_easy:
+                    batch += list(self.rng.choice(self.negative_indices, n_easy, replace=True))
+
             self.rng.shuffle(batch)
             yield batch
 
