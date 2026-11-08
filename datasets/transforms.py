@@ -4,9 +4,9 @@ Key rule (see DESIGN.md section 9): augmentation must never create or erase
 a defect region, and it must preserve the meaning of "reference vs.
 inspected" difference. That splits every transform into one of two buckets:
 
-  SHARED / joint (applied to input image + its boxes together, so
-  labels stay pixel-aligned):
-      rotation, translation, scale, perspective, horizontal flip
+  SHARED / joint (applied with identical parameters to the input image, its
+  boxes AND the reference image, so the pair stays pixel-aligned):
+      crop, resize/letterbox, rotation, translation, scale, perspective, flips
       -> geometric only. Never Cutout/CutMix/random-erasing on the input
          (they can remove or synthesize what looks like a defect).
 
@@ -16,38 +16,63 @@ inspected" difference. That splits every transform into one of two buckets:
       -> photometric only, simulates the fact that reference and inspected
          shots are captured at different times/lighting, which the encoder
          must learn to be invariant to. A *small* independent geometric
-         jitter (+-3 deg rotation, +-3% scale/translate) is also applied to
-         the reference alone, to emulate imperfect ORB/RANSAC alignment
-         rather than assuming pixel-perfect registration.
+         jitter is also applied to the reference alone, to emulate imperfect
+         ORB/RANSAC alignment rather than assuming pixel-perfect registration
+         (configurable: data.augment.ref_jitter).
+
+Two geometry modes:
+  - letterbox (default, data.crop unset): the whole image is letterboxed to
+    data.image_size. Suitable when defects are large relative to the image.
+  - crop (data.crop set): train on aligned native-resolution windows of
+    data.crop.size, optionally centered on a random defect. For tiny defects
+    on large images (e.g. PCB), where letterboxing would shrink them to a few
+    pixels. Evaluation in this mode uses full-resolution images (no resize)
+    and sliding-window tiling, see inference/tiling.py.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+import random
+from typing import Dict, List, Optional, Tuple
 
 import albumentations as A
 import cv2
 import numpy as np
 
+_BBOX = dict(format="pascal_voc", label_fields=["labels"])
+_PAIR = {"reference": "image"}
 
-def build_shared_geometric_transform(image_size: Tuple[int, int], train: bool) -> A.Compose:
+
+def _letterbox(h: int, w: int) -> list:
+    return [A.LongestMaxSize(max_size=max(h, w)),
+            A.PadIfNeeded(h, w, border_mode=cv2.BORDER_CONSTANT, fill=0)]
+
+
+def _geometric_aug(extra_flips: bool, large: bool) -> list:
+    augs = [A.HorizontalFlip(p=0.5)]
+    if extra_flips:  # orientation-free objects (PCBs), not garments
+        augs += [A.VerticalFlip(p=0.5), A.RandomRotate90(p=0.5)]
+    if large:
+        augs += [A.Affine(rotate=(-8, 8), translate_percent=(-0.05, 0.05),
+                          scale=(0.95, 1.05), shear=(-3, 3), p=0.7,
+                          border_mode=cv2.BORDER_CONSTANT, fill=0),
+                 A.Perspective(scale=(0.02, 0.05), p=0.3)]
+    else:
+        augs += [A.Affine(rotate=(-5, 5), scale=(0.95, 1.05), p=0.3,
+                          border_mode=cv2.BORDER_CONSTANT, fill=0)]
+    return augs
+
+
+def build_shared_geometric_transform(image_size: Tuple[int, int], train: bool,
+                                     extra_flips: bool = False) -> A.Compose:
+    """Letterbox mode; applied jointly to input + reference."""
     h, w = image_size
     if not train:
-        return A.Compose(
-            [A.LongestMaxSize(max_size=max(h, w)),
-             A.PadIfNeeded(h, w, border_mode=cv2.BORDER_CONSTANT, fill=0)],
-            bbox_params=A.BboxParams(format="pascal_voc", label_fields=["labels"]),
-        )
+        return A.Compose(_letterbox(h, w), bbox_params=A.BboxParams(**_BBOX),
+                         additional_targets=_PAIR)
     return A.Compose(
-        [
-            A.LongestMaxSize(max_size=max(h, w)),
-            A.PadIfNeeded(h, w, border_mode=cv2.BORDER_CONSTANT, fill=0),
-            A.HorizontalFlip(p=0.5),
-            A.Affine(rotate=(-8, 8), translate_percent=(-0.05, 0.05),
-                     scale=(0.95, 1.05), shear=(-3, 3), p=0.7,
-                     border_mode=cv2.BORDER_CONSTANT, fill=0),
-            A.Perspective(scale=(0.02, 0.05), p=0.3),
-        ],
-        bbox_params=A.BboxParams(format="pascal_voc", label_fields=["labels"], min_visibility=0.3),
+        _letterbox(h, w) + _geometric_aug(extra_flips, large=True),
+        bbox_params=A.BboxParams(**_BBOX, min_visibility=0.3),
+        additional_targets=_PAIR,
     )
 
 
@@ -64,38 +89,100 @@ def build_independent_photometric_transform(train: bool) -> A.Compose:
     ])
 
 
-def build_reference_geometric_jitter() -> A.Compose:
+def build_reference_geometric_jitter(rotate: float = 3.0, translate: float = 0.02,
+                                     scale: float = 0.03, p: float = 0.5) -> A.Compose:
     """Small independent geometric perturbation applied only to the
     reference branch, to teach tolerance to imperfect alignment."""
     return A.Compose([
-        A.Affine(rotate=(-3, 3), translate_percent=(-0.02, 0.02),
-                  scale=(0.97, 1.03), p=0.5, border_mode=cv2.BORDER_CONSTANT, fill=0),
+        A.Affine(rotate=(-rotate, rotate), translate_percent=(-translate, translate),
+                 scale=(1 - scale, 1 + scale), p=p, border_mode=cv2.BORDER_CONSTANT, fill=0),
     ])
 
 
 class SiamesePairTransform:
-    """Bundles the three pipelines above into one callable used by the dataset."""
+    """Bundles shared geometry + independent photometric + reference jitter
+    into one callable used by the dataset.
 
-    def __init__(self, image_size: Tuple[int, int], train: bool = True):
-        self.shared_geo = build_shared_geometric_transform(image_size, train)
+    crop: None (letterbox mode) or dict with keys
+        size (int), defect_centered_prob (float), scale ([lo, hi]: resize
+        factor applied to the window, so >1 zooms in).
+    augment: optional dict with keys extra_flips (bool) and ref_jitter
+        (dict of build_reference_geometric_jitter kwargs).
+    """
+
+    def __init__(self, image_size: Tuple[int, int], train: bool = True,
+                 crop: Optional[Dict] = None, augment: Optional[Dict] = None):
+        augment = augment or {}
+        self.train = train
+        self.crop = crop
+        extra_flips = augment.get("extra_flips", False)
+
+        if crop is None:
+            self.shared_geo = build_shared_geometric_transform(image_size, train, extra_flips)
+        elif train:
+            size = crop["size"]
+            self.shared_geo = A.Compose(
+                [A.Resize(size, size)] + _geometric_aug(extra_flips, large=False),
+                bbox_params=A.BboxParams(**_BBOX, min_visibility=0.5),
+                additional_targets=_PAIR,
+            )
+        else:
+            self.shared_geo = None  # full-resolution eval, tiled downstream
+
         self.photo_input = build_independent_photometric_transform(train)
         self.photo_ref = build_independent_photometric_transform(train)
-        self.ref_geo_jitter = build_reference_geometric_jitter() if train else A.Compose([])
+        self.ref_geo_jitter = (build_reference_geometric_jitter(**augment.get("ref_jitter", {}))
+                               if train else A.Compose([]))
+
+    # python `random` (not a numpy Generator made here): torch reseeds it per
+    # DataLoader worker, so workers don't all draw the same crops.
+    def _crop_window(self, h: int, w: int, boxes: List[List[float]]) -> Tuple[int, int, int]:
+        lo, hi = self.crop.get("scale", [1.0, 1.0])
+        win = int(round(self.crop["size"] / random.uniform(lo, hi)))
+        win = max(32, min(win, h, w))
+        if boxes and random.random() < self.crop.get("defect_centered_prob", 0.5):
+            x1, y1, x2, y2 = random.choice(boxes)
+            # random placement that keeps the chosen box inside the window when possible
+            x_lo, x_hi = x2 - win, x1
+            y_lo, y_hi = y2 - win, y1
+            x0 = random.uniform(min(x_lo, x_hi), max(x_lo, x_hi))
+            y0 = random.uniform(min(y_lo, y_hi), max(y_lo, y_hi))
+        else:
+            x0 = random.uniform(0, w - win)
+            y0 = random.uniform(0, h - win)
+        x0 = int(np.clip(x0, 0, w - win))
+        y0 = int(np.clip(y0, 0, h - win))
+        return x0, y0, win
 
     def __call__(self, input_image: np.ndarray, reference_image: np.ndarray,
                  boxes: List[List[float]], labels: List[int]) -> Dict:
-        geo_out = self.shared_geo(
-            image=input_image,
-            bboxes=boxes, labels=labels,
-        )
-        input_image_t = self.photo_input(image=geo_out["image"])["image"]
+        if self.crop is not None and self.train:
+            if input_image.shape[:2] != reference_image.shape[:2]:
+                raise ValueError("crop mode needs input and reference of the same size "
+                                 f"(aligned pairs), got {input_image.shape[:2]} vs "
+                                 f"{reference_image.shape[:2]}")
+            h, w = input_image.shape[:2]
+            x0, y0, win = self._crop_window(h, w, boxes)
+            crop = A.Compose([A.Crop(x0, y0, x0 + win, y0 + win)],
+                             bbox_params=A.BboxParams(**_BBOX, min_visibility=0.5),
+                             additional_targets=_PAIR)
+            c = crop(image=input_image, reference=reference_image, bboxes=boxes, labels=labels)
+            input_image, reference_image = c["image"], c["reference"]
+            boxes, labels = list(c["bboxes"]), list(c["labels"])
 
-        ref_out = self.ref_geo_jitter(image=reference_image)
-        reference_image_t = self.photo_ref(image=ref_out["image"])["image"]
+        if self.shared_geo is not None:
+            g = self.shared_geo(image=input_image, reference=reference_image,
+                                bboxes=boxes, labels=labels)
+            input_image, reference_image = g["image"], g["reference"]
+            boxes, labels = g["bboxes"], g["labels"]
+
+        input_image = self.photo_input(image=input_image)["image"]
+        reference_image = self.ref_geo_jitter(image=reference_image)["image"]
+        reference_image = self.photo_ref(image=reference_image)["image"]
 
         return {
-            "input_image": input_image_t,
-            "reference_image": reference_image_t,
-            "boxes": geo_out["bboxes"],
-            "labels": geo_out["labels"],
+            "input_image": input_image,
+            "reference_image": reference_image,
+            "boxes": [list(map(float, b)) for b in boxes],
+            "labels": [int(l) for l in labels],
         }

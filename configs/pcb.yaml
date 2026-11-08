@@ -1,0 +1,124 @@
+# ---------------------------------------------------------------------------
+# Siamese Defect Detection — PKU-Market-PCB (data/pcb from scripts/convert_pcb_voc.py)
+# GPU assumed. CPU smoke test: model.backbone.name resnet18, train.batch_size 2,
+# train.batches_per_epoch 20, train.epochs 2, experiment.amp false.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: pcb_siamese_v1
+  seed: 42
+  output_dir: runs/pcb_siamese_v1
+  amp: true                     # mixed precision (fp16) training
+  grad_accum_steps: 1
+
+data:
+  # PKU-Market-PCB, assembled by scripts/convert_pcb_voc.py (train/val only)
+  root: data/pcb/
+  reference_dir: data/pcb/reference
+  images_dir: data/pcb/images
+  train_split: data/pcb/annotations/train.json
+  val_split: data/pcb/annotations/val.json
+  image_size: [640, 640]        # crop/tile size the model sees (also the export shape)
+  num_workers: 8
+  pin_memory: true
+
+  defect_classes:
+    - missing_hole
+    - mouse_bite
+    - open_circuit
+    - short
+    - spur
+    - spurious_copper
+
+  # tiny defects (median ~64 px on ~3000x2000 boards): train on aligned
+  # native-resolution crops instead of letterboxing the whole board
+  crop:
+    size: 640
+    defect_centered_prob: 0.7   # else uniform placement -> mostly defect-free crops
+    scale: [0.8, 1.2]           # zoom factor on the source window
+
+  augment:
+    extra_flips: true           # vertical flip + rot90 (PCBs have no canonical orientation)
+    ref_jitter:                 # templates are pixel-aligned: keep reference jitter tiny
+      rotate: 1.0
+      translate: 0.01
+      scale: 0.01
+      p: 0.5
+
+  pair_sampling:
+    positive_ratio: 0.75         # negatives = the 10 template boards (input == reference)
+    hard_negative_ratio: 0.3     # fraction of "good vs good" pairs drawn from hard-negative pool
+    hard_negative_pool_size: 10
+    hard_negative_refresh_every_epochs: 1
+
+model:
+  backbone:
+    name: resnet50            # options: resnet34, resnet50, convnext_tiny, mobilenet_v3_large
+    pretrained: true
+    frozen_stages: 1           # freeze stem + stage1 for the first N epochs
+  fpn:
+    out_channels: 256
+    levels: [p3, p4, p5, p6, p7]
+  comparison:
+    mode: concat_diff_residual   # options: concat, abs_diff, subtract, cosine, concat_diff_residual, cross_attention
+    reduce_channels: 256
+    use_cosine_channel: true
+  det_head:
+    num_convs: 4
+  embedding:
+    dim: 256
+    pooling: gem                 # generalized-mean pooling
+
+loss:
+  weights:
+    detection: 1.0
+    classification: 1.0
+    siamese: 0.1                 # global embedding barely moves for tiny defects
+  detection:
+    focal_alpha: 0.25
+    focal_gamma: 2.0
+    box_loss: ciou
+    centerness: bce
+  classification:
+    label_smoothing: 0.05
+  siamese:
+    type: contrastive            # options: contrastive, triplet, cosine_embedding, infonce
+    margin: 1.0
+    temperature: 0.07            # used only if type == infonce
+
+train:
+  optimizer: adamw
+  lr: 0.0002
+  weight_decay: 0.05
+  batch_size: 8
+  batches_per_epoch: 200         # ~3 crops per train image per epoch
+  epochs: 60
+  warmup_epochs: 2
+  scheduler: cosine
+  min_lr_ratio: 0.01
+  ema_decay: 0.999
+  early_stopping:
+    metric: val/mAP50
+    patience: 12
+    mode: max
+  hard_negative_mining:
+    enabled: true
+    start_epoch: 5
+    top_k_fraction: 0.3
+
+inference:
+  score_threshold: 0.3
+  nms_iou_threshold: 0.5
+  max_detections: 100
+  anomaly_embedding_threshold: 0.35   # cosine-distance threshold for unknown-defect flagging
+  tile:                         # sliding window over the full-resolution board
+    size: 640
+    overlap: 128                # any box <= 128 px (~95% of defects) fits whole in some tile
+    batch_size: 8
+
+export:
+  onnx_opset: 17
+  input_names: [reference, input]
+  output_names: [boxes, scores, labels, embedding_distance]
+  dynamic_axes: false           # fixed shape preferred for OpenVINO + industrial line
+  precision: [fp32, fp16, int8]

@@ -30,7 +30,9 @@ from training.validate import validate
 
 
 def build_dataloader(cfg: dict, split_file: str, train: bool) -> DataLoader:
-    transform = SiamesePairTransform(tuple(cfg["data"]["image_size"]), train=train)
+    transform = SiamesePairTransform(tuple(cfg["data"]["image_size"]), train=train,
+                                     crop=cfg["data"].get("crop"),
+                                     augment=cfg["data"].get("augment"))
     dataset = SiameseDefectDataset(
         split_file, cfg["data"]["images_dir"], cfg["data"]["defect_classes"],
         transform=transform, train=train, reference_root=cfg["data"]["reference_dir"],
@@ -43,12 +45,15 @@ def build_dataloader(cfg: dict, split_file: str, train: bool) -> DataLoader:
             batch_size=cfg["train"]["batch_size"],
             positive_ratio=cfg["data"]["pair_sampling"]["positive_ratio"],
             hard_negative_ratio=cfg["data"]["pair_sampling"]["hard_negative_ratio"],
-            num_batches=max(1, len(dataset) // cfg["train"]["batch_size"]),
+            num_batches=cfg["train"].get("batches_per_epoch")
+            or max(1, len(dataset) // cfg["train"]["batch_size"]),
         )
         loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=siamese_collate_fn,
                              num_workers=cfg["data"]["num_workers"], pin_memory=cfg["data"]["pin_memory"])
         return loader, dataset, hard_pool
-    loader = DataLoader(dataset, batch_size=cfg["train"]["batch_size"], shuffle=False,
+    # tiled validation runs per full-resolution image, and images differ in size
+    val_bs = 1 if cfg["inference"].get("tile") else cfg["train"]["batch_size"]
+    loader = DataLoader(dataset, batch_size=val_bs, shuffle=False,
                          collate_fn=siamese_collate_fn, num_workers=cfg["data"]["num_workers"])
     return loader, dataset, None
 

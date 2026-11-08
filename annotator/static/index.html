@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Siamese Annotator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <strong>Siamese Annotator</strong>
+  <span id="progress"></span>
+  <div class="tools" id="tools">
+    <button data-tool="select" title="Select / move / edit (V)">Select <kbd>V</kbd></button>
+    <button data-tool="box" title="Bounding box, detection (B)">Box <kbd>B</kbd></button>
+    <button data-tool="polygon" title="Polygon, segmentation (P)">Polygon <kbd>P</kbd></button>
+    <button data-tool="brush" title="Brush mask, segmentation (R)">Brush <kbd>R</kbd></button>
+    <button data-tool="eraser" title="Erase from the selected mask (E)">Eraser <kbd>E</kbd></button>
+    <label class="brush-size" title="Brush size ([ and ])">size <input id="brushSize" type="range" min="2" max="120" value="18"></label>
+  </div>
+  <div class="actions">
+    <button id="btnGood" title="No defects: negative pair (G)">Mark good <kbd>G</kbd></button>
+    <button id="btnAssist" title="Pre-label with the trained model (A)">Model assist <kbd>A</kbd></button>
+    <button id="btnUndo" title="Ctrl+Z">Undo</button>
+    <button id="btnRedo" title="Ctrl+Y">Redo</button>
+    <button id="btnSave" title="Ctrl+S">Save</button>
+    <button id="btnExport">Export…</button>
+    <button id="btnHelp">?</button>
+  </div>
+</header>
+
+<main>
+  <aside id="left">
+    <div class="row">
+      <select id="filter">
+        <option value="all">All images</option>
+        <option value="unlabeled">Unlabeled</option>
+        <option value="labeled">Labeled</option>
+        <option value="good">Good (no defect)</option>
+      </select>
+      <button id="btnRescan" title="Look for new files in the images folder">↻</button>
+    </div>
+    <ul id="imageList"></ul>
+  </aside>
+
+  <section id="stage">
+    <div class="pane">
+      <div class="pane-head">
+        <span>Reference</span>
+        <select id="refSelect" title="Golden image this inspected image is paired with"></select>
+        <label><input type="checkbox" id="showOnRef" checked> show labels</label>
+      </div>
+      <canvas id="refCanvas"></canvas>
+    </div>
+    <div class="pane">
+      <div class="pane-head">
+        <span>Inspected</span>
+        <span id="imgName" class="muted"></span>
+        <span id="imgStatus" class="badge"></span>
+      </div>
+      <canvas id="mainCanvas" tabindex="0"></canvas>
+    </div>
+  </section>
+
+  <aside id="right">
+    <h3>Classes</h3>
+    <ul id="classList"></ul>
+    <h3>Annotations <span id="annCount" class="muted"></span></h3>
+    <div class="row small">
+      <button id="btnAcceptAll" title="Accept all model proposals (Shift+K)">Accept all proposals</button>
+    </div>
+    <ul id="annList"></ul>
+  </aside>
+</main>
+
+<footer id="statusbar">ready</footer>
+
+<dialog id="exportDialog">
+  <form method="dialog">
+    <h3>Export train / val / test</h3>
+    <label>Annotations dir <input name="annotations_dir"></label>
+    <label>Val ratio <input name="val_ratio" type="number" step="0.05" min="0" max="0.9"></label>
+    <label>Test ratio <input name="test_ratio" type="number" step="0.05" min="0" max="0.9"></label>
+    <label>Seed <input name="seed" type="number"></label>
+    <label class="check"><input name="semantic_masks" type="checkbox"> also write semantic mask PNGs (pixel = class index + 1)</label>
+    <label>Masks dir <input name="masks_dir"></label>
+    <label class="check"><input name="include_unreviewed" type="checkbox"> include unreviewed model proposals</label>
+    <label>Copy images + references to (optional) <input name="copy_to" placeholder="e.g. data/prepared"></label>
+    <pre id="exportResult"></pre>
+    <div class="row">
+      <button value="cancel">Close</button>
+      <button id="btnDoExport" value="default">Export</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="helpDialog">
+  <form method="dialog">
+    <h3>Shortcuts</h3>
+    <table>
+      <tr><td><kbd>V</kbd> <kbd>B</kbd> <kbd>P</kbd> <kbd>R</kbd> <kbd>E</kbd></td><td>select · box · polygon · brush · eraser</td></tr>
+      <tr><td><kbd>1</kbd>–<kbd>9</kbd></td><td>active class (also re-classes the selected annotation)</td></tr>
+      <tr><td>Polygon</td><td>click to add points, click the first point / double-click / <kbd>Enter</kbd> to close, <kbd>Backspace</kbd> removes the last point</td></tr>
+      <tr><td>Brush</td><td>paints into the selected mask, or starts a new one (<kbd>Esc</kbd> to deselect and start another instance)</td></tr>
+      <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>brush size</td></tr>
+      <tr><td><kbd>Del</kbd></td><td>delete selected annotation</td></tr>
+      <tr><td><kbd>K</kbd> / <kbd>Shift</kbd>+<kbd>K</kbd></td><td>accept selected / all model proposals</td></tr>
+      <tr><td><kbd>G</kbd></td><td>mark image good (no defects)</td></tr>
+      <tr><td><kbd>A</kbd></td><td>model assist</td></tr>
+      <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>previous / next image (auto-saves)</td></tr>
+      <tr><td>wheel · middle-drag · <kbd>Space</kbd>+drag</td><td>zoom · pan · pan (<kbd>F</kbd> fits)</td></tr>
+      <tr><td><kbd>H</kbd></td><td>hide / show selected annotation</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd> / <kbd>S</kbd></td><td>undo / redo / save</td></tr>
+    </table>
+    <div class="row"><button value="cancel">Close</button></div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

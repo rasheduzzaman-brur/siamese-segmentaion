@@ -13,3 +13,5 @@ openvino-dev>=2024.0
 nncf>=2.9
 tensorboard>=2.15
 tqdm>=4.66
+fastapi>=0.110      # annotator/ (local labelling web app)
+uvicorn>=0.29

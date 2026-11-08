@@ -27,7 +27,8 @@ class ResNetBackbone(nn.Module):
         super().__init__()
         if name not in _RESNET_OUT_CHANNELS:
             raise ValueError(f"Unsupported resnet backbone: {name}")
-        weights = "IMAGENET1K_V2" if pretrained else None
+        # "DEFAULT" = best available weights per model (resnet18/34 have no V2)
+        weights = "DEFAULT" if pretrained else None
         net = getattr(torchvision.models, name)(weights=weights)
 
         self.stem = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool)
@@ -73,7 +74,8 @@ class MobileNetV3Backbone(nn.Module):
 
     def __init__(self, pretrained: bool = True, **_ignored):
         super().__init__()
-        weights = "IMAGENET1K_V2" if pretrained else None
+        # "DEFAULT" = best available weights per model (resnet18/34 have no V2)
+        weights = "DEFAULT" if pretrained else None
         net = torchvision.models.mobilenet_v3_large(weights=weights).features
         # feature indices producing strides 8 / 16 / 32 for mobilenet_v3_large
         self.stage_a = net[:7]     # -> stride 8,  40 channels

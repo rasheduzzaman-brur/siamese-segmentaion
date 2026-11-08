@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Siamese Upload</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #fff; --text: #1d2026; --muted: #6b7280; --border: #d9dce1;
+    --accent: #2563eb; --ok: #16a34a; --warn: #b45309; --err: #dc2626; --drop: #eef3ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15171b; --panel: #1e2127; --text: #e6e8eb; --muted: #9aa1ab; --border: #343842;
+            --accent: #3b82f6; --drop: #1d2a44; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  header { padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+           display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .muted { flex: 1; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px; display: grid;
+         grid-template-columns: 320px 1fr; gap: 20px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  .muted { color: var(--muted); }
+  .step { display: inline-block; width: 22px; height: 22px; border-radius: 50%; background: var(--accent);
+          color: #fff; text-align: center; font-size: 13px; line-height: 22px; margin-right: 6px; }
+  .template-preview { margin: 12px 0; aspect-ratio: 3 / 2; background: var(--bg); border-radius: 8px;
+                      display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .template-preview img { max-width: 100%; max-height: 100%; }
+  .drop { border: 2px dashed var(--border); border-radius: 10px; padding: 26px 12px; text-align: center;
+          cursor: pointer; transition: background .15s, border-color .15s; }
+  .drop.over { background: var(--drop); border-color: var(--accent); }
+  .drop.disabled { opacity: .5; pointer-events: none; }
+  .drop strong { display: block; margin-bottom: 4px; }
+  select, button, a.button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+                             background: var(--panel); color: var(--text); }
+  a.button { text-decoration: none; background: var(--accent); color: #fff; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  .row select { flex: 1; min-width: 0; }
+  #summary { margin: 12px 0 0; display: flex; gap: 16px; flex-wrap: wrap; }
+  #summary b { font-size: 18px; display: block; }
+  ul#files { list-style: none; padding: 0; margin: 14px 0 0; max-height: 52vh; overflow: auto; }
+  ul#files li { display: flex; gap: 10px; align-items: center; padding: 6px 4px; border-top: 1px solid var(--border); }
+  ul#files img { width: 54px; height: 36px; object-fit: cover; border-radius: 4px; background: var(--bg); }
+  ul#files .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st-added { color: var(--ok); } .st-duplicate { color: var(--warn); } .st-error { color: var(--err); }
+  .st-uploading { color: var(--muted); }
+  progress { width: 100%; height: 8px; margin-top: 10px; }
+  progress[hidden] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Siamese Upload</h1>
+  <span class="muted" id="projectLine">loading…</span>
+  <a class="button" id="lsLink" href="#" target="_blank" rel="noopener">Open in Label Studio ↗</a>
+</header>
+
+<main>
+  <section>
+    <h2><span class="step">1</span>Template</h2>
+    <div class="muted">The golden reference image. Every raw image is paired with it.</div>
+    <div class="template-preview" id="templatePreview"><span class="muted">no template yet</span></div>
+    <div class="drop" id="templateDrop">
+      <strong>Drop the template here</strong>
+      <span class="muted">or click to choose (replaces the current one for new uploads)</span>
+    </div>
+    <div class="row">
+      <select id="templateSelect" title="Switch to a template uploaded before"></select>
+    </div>
+    <input type="file" id="templateInput" accept="image/*" hidden>
+  </section>
+
+  <section>
+    <h2><span class="step">2</span>Raw images</h2>
+    <div class="muted">Images to inspect. Each becomes a Label Studio task showing it next to the template.</div>
+    <div id="summary"></div>
+    <div class="drop disabled" id="rawDrop" style="margin-top:12px">
+      <strong>Drop raw images or a folder here</strong>
+      <span class="muted">or click to choose files (jpg, png, bmp, tif, webp)</span>
+    </div>
+    <input type="file" id="rawInput" accept="image/*" multiple hidden>
+    <progress id="progress" hidden></progress>
+    <ul id="files"></ul>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let info = null;
+
+async function api(method, url, body) {
+  const res = await fetch(url, { method, body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+function render() {
+  $("projectLine").textContent =
+    `Label Studio project ${info.project_id} · ${info.project_title} · ${info.task_count ?? "?"} tasks, ${info.labeled_count ?? "?"} labelled`;
+  $("lsLink").href = info.label_studio_url;
+  const prev = $("templatePreview");
+  if (info.template) {
+    prev.innerHTML = "";
+    const img = new Image();
+    img.src = `/api/template/${encodeURIComponent(info.template)}?t=${Date.now()}`;
+    img.alt = info.template;
+    prev.appendChild(img);
+  }
+  const sel = $("templateSelect");
+  sel.innerHTML = "";
+  for (const t of info.templates) sel.add(new Option(t, t, false, t === info.template));
+  sel.disabled = info.templates.length < 2;
+  $("rawDrop").classList.toggle("disabled", !info.template);
+  $("summary").innerHTML = info.template
+    ? `<div><span class="muted">Pairing with</span><b>${escapeHtml(info.template)}</b></div>`
+    : `<div class="st-error">Upload the template first.</div>`;
+}
+
+const escapeHtml = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function refresh() {
+  info = await api("GET", "/api/info");
+  render();
+}
+
+function wireDrop(drop, input, onFiles) {
+  drop.onclick = () => input.click();
+  input.onchange = () => { onFiles([...input.files]); input.value = ""; };
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = async (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    onFiles(await filesFromDrop(e.dataTransfer));
+  };
+}
+
+// dropped folders are walked recursively
+async function filesFromDrop(dt) {
+  const entries = [...dt.items].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  async function walk(entry) {
+    if (entry.isFile) out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        for (const e of batch) await walk(e);
+      } while (batch.length);
+    }
+  }
+  for (const e of entries) await walk(e);
+  return out;
+}
+
+const isImage = (f) => /\.(jpe?g|png|bmp|tiff?|webp)$/i.test(f.name);
+
+wireDrop($("templateDrop"), $("templateInput"), async (files) => {
+  const f = files.find(isImage);
+  if (!f) return alert("Choose an image file for the template.");
+  try {
+    info = await api("POST", `/api/template?name=${encodeURIComponent(f.name)}`, f);
+    render();
+  } catch (e) { alert(`Template upload failed: ${e.message}`); }
+});
+
+$("templateSelect").onchange = async (e) => {
+  info = await api("PUT", `/api/template?name=${encodeURIComponent(e.target.value)}`);
+  render();
+};
+
+wireDrop($("rawDrop"), $("rawInput"), async (files) => {
+  files = files.filter(isImage);
+  if (!files.length) return;
+  const list = $("files"), bar = $("progress");
+  bar.hidden = false; bar.max = files.length; bar.value = 0;
+  const counts = { added: 0, duplicate: 0, error: 0 };
+  for (const f of files) {
+    const li = document.createElement("li");
+    const thumb = new Image();
+    thumb.src = URL.createObjectURL(f);
+    thumb.onload = () => URL.revokeObjectURL(thumb.src);
+    li.append(thumb);
+    li.insertAdjacentHTML("beforeend", `<span class="name"></span><span class="st-uploading">uploading…</span>`);
+    li.querySelector(".name").textContent = f.webkitRelativePath || f.name;
+    list.prepend(li);
+    const st = li.lastElementChild;
+    try {
+      const r = await api("POST", `/api/raw?name=${encodeURIComponent(f.name)}`, f);
+      st.className = `st-${r.status}`;
+      st.textContent = r.status === "added" ? "added to Label Studio" : "already uploaded";
+      li.querySelector(".name").title = r.file_name;
+      counts[r.status]++;
+    } catch (e) {
+      st.className = "st-error"; st.textContent = e.message; counts.error++;
+    }
+    bar.value++;
+  }
+  bar.hidden = true;
+  await refresh();
+  $("summary").insertAdjacentHTML("beforeend",
+    `<div><span class="muted">Last batch</span><b>${counts.added} added` +
+    (counts.duplicate ? `, ${counts.duplicate} duplicate` : "") +
+    (counts.error ? `, <span class="st-error">${counts.error} failed</span>` : "") + `</b></div>`);
+});
+
+refresh().catch((e) => { $("projectLine").textContent = `Cannot reach Label Studio: ${e.message}`; });
+</script>
+</body>
+</html>
